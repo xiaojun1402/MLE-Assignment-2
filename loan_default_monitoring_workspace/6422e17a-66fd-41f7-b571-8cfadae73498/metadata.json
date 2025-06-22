@@ -1,0 +1,15 @@
+{
+  "id": "6422e17a-66fd-41f7-b571-8cfadae73498",
+  "name": "Loan Default Prediction Monitoring",
+  "description": "Loan default prediction model with drift detection and automated testing",
+  "dashboard": {
+    "name": "Loan Default Prediction Monitoring",
+    "panels": [],
+    "tabs": [],
+    "tab_id_to_panel_ids": {}
+  },
+  "team_id": null,
+  "date_from": null,
+  "date_to": null,
+  "created_at": "2025-06-22T15:57:39.777797"
+}
