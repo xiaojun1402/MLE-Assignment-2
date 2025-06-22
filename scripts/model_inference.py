@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore")
 
 import argparse
 
-# to call this script: python model_inference.py --snapshotdate "2024-06-01" --modelname "XGB_model_2024_06_01.pkl"
+# to call this script: python scripts/model_inference.py --snapshotdate "2024-06-01" --modelname "XGB_model_2024_06_01.pkl"
 
 # --- define classes and functions ---     
 class OutlierHandler(BaseEstimator, TransformerMixin):
@@ -182,9 +182,70 @@ class LogSkewnessHandler(BaseEstimator, TransformerMixin):
                     pass
         
         return X_df.values if not isinstance(X, pd.DataFrame) else X_df
+
+def calculate_training_period_dates(model_train_date, train_test_period_months=12, oot_period_months=2, train_test_ratio=0.8):
+    """
+    Calculate training period dates based on model train date
+    """
+    # Calculate OOT period
+    oot_end_date = model_train_date - timedelta(days=1)
+    oot_start_date = model_train_date - relativedelta(months=oot_period_months)
     
+    # Calculate train/test period
+    train_test_end_date = oot_start_date - timedelta(days=1)
+    train_test_start_date = oot_start_date - relativedelta(months=train_test_period_months)
+    
+    # Calculate training split (80% of train/test period)
+    split_months = int(train_test_period_months * train_test_ratio)
+    train_end_date = train_test_start_date + relativedelta(months=split_months)
+    
+    return {
+        'train_test_start_date': train_test_start_date,
+        'train_test_end_date': train_test_end_date,
+        'train_end_date': train_end_date,
+        'oot_start_date': oot_start_date,
+        'oot_end_date': oot_end_date
+    }
+
+def process_inference_data(features_sdf, feature_cols, model_artefact, config, data_type="current"):
+    """
+    Process inference data for either training or current period
+    """
+    print(f"\n=== Processing {data_type} inference data ===")
+    
+    features_pdf = features_sdf.toPandas()
+    print(f"{data_type.capitalize()} data shape: {features_pdf.shape}")
+    
+    X_inference = features_pdf[feature_cols]
+    
+    # High VIF features to remove (based on multicollinearity analysis)
+    high_vif_features = [
+        'Monthly_Inhand_Salary', 'credit_history_bucket_Medium', 'num_active_loans', 'credit_inquiries_bucket_Medium'
+    ]
+
+    # Drop high VIF features from datasets
+    X_inference_reduced = X_inference.drop(columns=high_vif_features, errors='ignore')
+
+    # Apply preprocessing_transformers from model artefact
+    preprocessing_transformer = model_artefact["preprocessing_transformers"]["stdscaler"]
+    X_inference_processed = preprocessing_transformer.transform(X_inference_reduced)
+
+    print(f'X_inference_{data_type}', X_inference_processed.shape[0])
+
+    # Model prediction inference
+    model = model_artefact["model"]
+    y_inference = model.predict_proba(X_inference_processed)[:, 1]
+    
+    # Prepare output
+    y_inference_pdf = features_pdf[["Customer_ID","snapshot_date"]].copy()
+    y_inference_pdf["model_name"] = config["model_name"]
+    y_inference_pdf["model_predictions"] = y_inference
+    y_inference_pdf["data_type"] = data_type
+    
+    return y_inference_pdf
+
 def main(snapshotdate, modelname):
-    print('\n\n---starting job---\n\n')
+    print('\n\n---starting enhanced inference job---\n\n')
     
     # Initialize SparkSession
     spark = pyspark.sql.SparkSession.builder \
@@ -203,30 +264,28 @@ def main(snapshotdate, modelname):
     config["model_bank_directory"] = "model_bank/"
     config["model_artefact_filepath"] = config["model_bank_directory"] + config["model_name"]
     
+    # Calculate training period dates
+    training_dates = calculate_training_period_dates(config["snapshot_date"].date())
+    config.update(training_dates)
+    
+    print("=== Enhanced Inference Configuration ===")
     pprint.pprint(config)
+    
+    print("\n=== Timeline ===")
+    print(f"Training Period: {config['train_test_start_date']} to {config['train_end_date']}")
+    print(f"Current Snapshot Date: {config['snapshot_date'].date()}")
 
     # --- load model artefact from model bank ---
-    # Load the model from the pickle file
     with open(config["model_artefact_filepath"], 'rb') as file:
         model_artefact = pickle.load(file)
     
-    print("Model loaded successfully! " + config["model_artefact_filepath"])
+    print(f"\nModel loaded successfully! {config['model_artefact_filepath']}")
 
     # --- load feature store ---
     feature_location = "datamart/gold/feature_store"
-
-    # Load parquet into DataFrame - connect to feature store
     features_store_sdf = spark.read.parquet(feature_location)
-    print("row_count:",features_store_sdf.count())
+    print(f"Feature store total rows: {features_store_sdf.count()}")
 
-    # extract feature store
-    features_sdf = features_store_sdf.filter((col("snapshot_date") == config["snapshot_date"]))
-    print("extracted features_sdf", features_sdf.count(), config["snapshot_date"])
-
-    features_pdf = features_sdf.toPandas()
-
-    # --- preprocess data for modeling ---
-        
     feature_cols = ['Age','occupation_developer', 'occupation_scientist', 'occupation_engineer',
         'occupation_teacher', 'occupation_manager', 'occupation_enterpreneur',
         'occupation_mechanic', 'occupation_musician', 'occupation_architect',
@@ -261,106 +320,76 @@ def main(snapshotdate, modelname):
         'avg_fe_17', 'avg_fe_18', 'avg_fe_19', 'avg_fe_20'
     ]
 
-    X_inference = features_pdf[feature_cols]
-        
-    # Define column categories based on outlier analysis
-    numerical_cols = ['Age', 'Annual_Income', 'Monthly_Inhand_Salary', 'Num_Bank_Accounts', 
-                    'Num_Credit_Card', 'Interest_Rate', 'Num_of_Loan', 'Delay_from_due_date',   
-                    'Changed_Credit_Limit', 'Outstanding_Debt', 'Credit_Utilization_Ratio', 
-                    'Total_EMI_per_month', 'Amount_invested_monthly', 'Monthly_Balance', 
-                    'Num_of_Delayed_Payment', 'disposable_income', 'DTI', 'num_active_loans', 
-                    'avg_fe_1', 'avg_fe_2', 'avg_fe_3', 'avg_fe_4', 'avg_fe_5', 'avg_fe_6', 
-                    'avg_fe_7', 'avg_fe_8', 'avg_fe_9', 'avg_fe_10', 'avg_fe_11', 'avg_fe_12', 
-                    'avg_fe_13', 'avg_fe_14', 'avg_fe_15', 'avg_fe_16', 'avg_fe_17', 'avg_fe_18', 
-                    'avg_fe_19', 'avg_fe_20']
-
-    # High VIF features to remove (based on multicollinearity analysis)
-    high_vif_features = [
-        'Monthly_Inhand_Salary', 'credit_history_bucket_Medium', 'num_active_loans', 'credit_inquiries_bucket_Medium'
-    ]
-
-    # Drop high VIF features from datasets
-    X_inference_reduced = X_inference.drop(columns=high_vif_features, errors='ignore')
-
-    # Update numerical columns by removing the dropped features
-    numerical_cols_reduced = [col for col in numerical_cols if col not in high_vif_features]
-
-    # Get remaining engineered features (only the ones that weren't dropped)
-    engineered_features_reduced = [f'avg_fe_{i}' for i in range(1, 21) if f'avg_fe_{i}' not in high_vif_features]
-
-    # One-hot encoded columns (categorical features)
-    all_cols = X_inference.columns.tolist()  # Get all column names from your dataset
-    onehot_cols = [col for col in all_cols if col not in numerical_cols]
-
-    # Update one-hot encoded columns by removing dropped features
-    onehot_cols_reduced = [col for col in onehot_cols if col not in high_vif_features]
-
-    # Categorize features by outlier severity and business logic
-    # High outlier columns (>5% outliers) - need aggressive treatment
-    high_outlier_cols = ['Outstanding_Debt', 'Total_EMI_per_month', 'Amount_invested_monthly', 
-                        'Monthly_Balance', 'DTI']
-
-    # Medium outlier columns (2-5% outliers) - moderate treatment  
-    # Note: Annual_Income was removed due to high VIF, so excluding it
-    medium_outlier_cols = ['Monthly_Inhand_Salary', 'disposable_income']
-
-    # Low/no outlier columns - minimal treatment
-    low_outlier_cols = ['Age', 'Interest_Rate', 'Changed_Credit_Limit', 'Credit_Utilization_Ratio']
-
-    # Count/discrete variables - business logic validation
-    count_features = ['Num_of_Loan', 'Num_Credit_Card', 'Num_of_Delayed_Payment', 'Num_Bank_Accounts',
-                    'Delay_from_due_date', 'num_active_loans']
-
-    # Filter all feature categories to only include features that exist in reduced dataset
-    high_outlier_cols = [col for col in high_outlier_cols if col in numerical_cols_reduced]
-    medium_outlier_cols = [col for col in medium_outlier_cols if col in numerical_cols_reduced]
-    low_outlier_cols = [col for col in low_outlier_cols if col in numerical_cols_reduced]
-    count_features = [col for col in count_features if col in numerical_cols_reduced]
-
-    # Fit and transform
-
-    # apply preprocessing_transformers from model artefact
-    preprocessing_transformer = model_artefact["preprocessing_transformers"]["stdscaler"]
-    X_inference = preprocessing_transformer.transform(X_inference_reduced)
-
-    print('X_inference', X_inference.shape[0])
-
-    # --- model prediction inference ---
-    # load model
-    model = model_artefact["model"]
+    # --- 1. Process Training Period Data ---
+    print("\n" + "="*50)
+    print("PROCESSING TRAINING PERIOD DATA")
+    print("="*50)
     
-    # predict model
-    y_inference = model.predict_proba(X_inference)[:, 1]
+    training_features_sdf = features_store_sdf.filter(
+        (col("snapshot_date") >= config["train_test_start_date"]) & 
+        (col("snapshot_date") <= config["train_end_date"])
+    )
+    print(f"Training period features: {training_features_sdf.count()} rows")
     
-    # prepare output
-    y_inference_pdf = features_pdf[["Customer_ID","snapshot_date"]].copy()
-    y_inference_pdf["model_name"] = config["model_name"]
-    y_inference_pdf["model_predictions"] = y_inference
+    training_predictions = process_inference_data(
+        training_features_sdf, feature_cols, model_artefact, config, "training"
+    )
+
+    # --- 2. Process Current Snapshot Data ---
+    print("\n" + "="*50)
+    print("PROCESSING CURRENT SNAPSHOT DATA")
+    print("="*50)
     
-    # --- save model inference to datamart gold table ---
-    # create bronze datalake
-    gold_directory = f"datamart/gold/model_predictions/{config["model_name"][:-4]}/"
-    print(gold_directory)
+    current_features_sdf = features_store_sdf.filter(
+        col("snapshot_date") == config["snapshot_date"]
+    )
+    print(f"Current snapshot features: {current_features_sdf.count()} rows")
     
+    current_predictions = process_inference_data(
+        current_features_sdf, feature_cols, model_artefact, config, "current"
+    )
+
+    # --- 3. Save Both Datasets ---
+    print("\n" + "="*50)
+    print("SAVING INFERENCE RESULTS")
+    print("="*50)
+    
+    # Create output directory
+    gold_directory = f"datamart/gold/model_predictions/{config['model_name'][:-4]}/"
     if not os.path.exists(gold_directory):
         os.makedirs(gold_directory)
     
-    # save gold table - IRL connect to database to write
-    partition_name = config["model_name"][:-4] + "_predictions_" + config["snapshot_date_str"].replace('-','_') + '.parquet'
-    filepath = gold_directory + partition_name
-    spark.createDataFrame(y_inference_pdf).write.mode("overwrite").parquet(filepath)
+    # Save training predictions
+    training_partition_name = f"{config['model_name'][:-4]}_training_predictions_{config['snapshot_date_str'].replace('-','_')}.parquet"
+    training_filepath = gold_directory + training_partition_name
+    spark.createDataFrame(training_predictions).write.mode("overwrite").parquet(training_filepath)
+    print(f'Training predictions saved to: {training_filepath}')
     
-    print('saved to:', filepath)
+    # Save current predictions  
+    current_partition_name = f"{config['model_name'][:-4]}_current_predictions_{config['snapshot_date_str'].replace('-','_')}.parquet"
+    current_filepath = gold_directory + current_partition_name
+    spark.createDataFrame(current_predictions).write.mode("overwrite").parquet(current_filepath)
+    print(f'Current predictions saved to: {current_filepath}')
+
+    # --- Summary ---
+    print("\n" + "="*50)
+    print("INFERENCE JOB SUMMARY")
+    print("="*50)
+    print(f"Model: {config['model_name']}")
+    print(f"Training Period: {config['train_test_start_date']} to {config['train_end_date']}")
+    print(f"Current Snapshot: {config['snapshot_date'].date()}")
+    print(f"Training Predictions: {len(training_predictions)} rows")
+    print(f"Current Predictions: {len(current_predictions)} rows")
 
     # --- end spark session --- 
     spark.stop()
     
-    print('\n\n---completed job---\n\n')
+    print('\n\n---completed enhanced inference job---\n\n')
 
 
 if __name__ == "__main__":
     # Setup argparse to parse command-line arguments
-    parser = argparse.ArgumentParser(description="run job")
+    parser = argparse.ArgumentParser(description="run enhanced inference job")
     parser.add_argument("--snapshotdate", type=str, required=True, help="YYYY-MM-DD")
     parser.add_argument("--modelname", type=str, required=True, help="model_name")
     
