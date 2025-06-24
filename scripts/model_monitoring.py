@@ -3,8 +3,9 @@ import os
 import pandas as pd
 import glob
 import datetime
-import numpy as np  # Fixed typo from 'npm'
+import numpy as np
 import json
+import argparse  # Missing import
 from typing import Dict, List
 
 # Evidently imports 
@@ -31,47 +32,68 @@ import warnings
 warnings.filterwarnings("ignore")
 warnings.simplefilter("ignore")
 
-# to call this script: python scripts/model_monitoring.py 
-# toggle Evidently User Interface by runnign this line in the terminal: evidently ui --workspace loan_default_monitoring_workspace
+# to call this script: python scripts/model_monitoring.py --snapshotdate "2024-06-01"
+# toggle Evidently User Interface by running this line in the terminal: evidently ui --workspace loan_default_monitoring_workspace
 
 # Configuration
 WORKSPACE_NAME = "loan_default_monitoring_workspace"
 PROJECT_NAME = "Loan Default Prediction Monitoring"
 PROJECT_DESCRIPTION = "Loan default prediction model with drift detection and automated testing"
 
-def load_monitoring_datasets():
+def load_monitoring_datasets(snapshotdate):
     """Load reference and production datasets for monitoring"""
     
     print("=== Loading Monitoring Datasets ===")
     
+    # Convert snapshot date format for file paths
+    snapshot_formatted = snapshotdate.replace("-", "_")
+    
     # Load reference data (training data)
     reference_path = "datamart/gold/model_monitoring/reference_data.parquet"
-    reference_data = pd.read_parquet(reference_path)
-    print(f"Reference data loaded: {len(reference_data)} rows, {len(reference_data.columns)} columns")
-    print(f"Reference data date range: {reference_data['snapshot_date'].min()} to {reference_data['snapshot_date'].max()}")
+    if not os.path.exists(reference_path):
+        print(f"Warning: Reference data not found at {reference_path}")
+        reference_data = pd.DataFrame()
+    else:
+        reference_data = pd.read_parquet(reference_path)
+        print(f"Reference data loaded: {len(reference_data)} rows, {len(reference_data.columns)} columns")
+        if 'snapshot_date' in reference_data.columns:
+            print(f"Reference data date range: {reference_data['snapshot_date'].min()} to {reference_data['snapshot_date'].max()}")
     
     # Load production data
     production_path = "datamart/gold/model_monitoring/production_data.parquet"
-    production_data = pd.read_parquet(production_path)
-    print(f"Production data loaded: {len(production_data)} rows, {len(production_data.columns)} columns")
+    if not os.path.exists(production_path):
+        print(f"Warning: Production data not found at {production_path}")
+        production_data = pd.DataFrame()
+    else:
+        production_data = pd.read_parquet(production_path)
+        print(f"Production data loaded: {len(production_data)} rows, {len(production_data.columns)} columns")
     
     # Load reference prediction data 
-    ref_prediction_path = "datamart/gold/model_predictions/XGB_model_2024_06_01/XGB_model_2024_06_01_training_predictions_2024_06_01.parquet"
-    ref_prediction_data = pd.read_parquet(ref_prediction_path)
-    print(f"Reference Prediction data loaded: {len(ref_prediction_data)} rows, {len(ref_prediction_data.columns)} columns")
+    ref_prediction_path = f"datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_training_predictions_{snapshot_formatted}.parquet"
+    if not os.path.exists(ref_prediction_path):
+        print(f"Warning: Reference prediction data not found at {ref_prediction_path}")
+        ref_prediction_data = pd.DataFrame()
+    else:
+        ref_prediction_data = pd.read_parquet(ref_prediction_path)
+        print(f"Reference Prediction data loaded: {len(ref_prediction_data)} rows, {len(ref_prediction_data.columns)} columns")
     
     # Load production prediction data 
-    prod_prediction_path = "datamart/gold/model_predictions/XGB_model_2024_06_01/XGB_model_2024_06_01_current_predictions_2024_06_01.parquet"
-    prod_prediction_data = pd.read_parquet(prod_prediction_path)
-    print(f"Production Prediction data loaded: {len(prod_prediction_data)} rows, {len(prod_prediction_data.columns)} columns")
+    prod_prediction_path = f"datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_current_predictions_{snapshot_formatted}.parquet"
+    if not os.path.exists(prod_prediction_path):
+        print(f"Warning: Production prediction data not found at {prod_prediction_path}")
+        prod_prediction_data = pd.DataFrame()
+    else:
+        prod_prediction_data = pd.read_parquet(prod_prediction_path)
+        print(f"Production Prediction data loaded: {len(prod_prediction_data)} rows, {len(prod_prediction_data.columns)} columns")
     
-    reference_data["snapshot_date"] = pd.to_datetime(reference_data["snapshot_date"])
-    production_data["snapshot_date"] = pd.to_datetime(production_data["snapshot_date"])
-    ref_prediction_data["snapshot_date"] = pd.to_datetime(ref_prediction_data["snapshot_date"])
-    prod_prediction_data["snapshot_date"] = pd.to_datetime(prod_prediction_data["snapshot_date"])
+    # Convert dates if columns exist
+    for df in [reference_data, production_data, ref_prediction_data, prod_prediction_data]:
+        if not df.empty and "snapshot_date" in df.columns:
+            df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
+    
     return reference_data, production_data, ref_prediction_data, prod_prediction_data
 
-def create_comprehensive_monthly_report(snapshot_date="2024-06-01"):
+def create_comprehensive_monthly_report(snapshotdate):
     """Create comprehensive monthly monitoring reports"""
     
     # Initialize reports list
@@ -79,89 +101,93 @@ def create_comprehensive_monthly_report(snapshot_date="2024-06-01"):
     
     # Convert snapshot_date to month name for display
     # Handle different date formats (with underscores or hyphens)
-    if "_" in snapshot_date:
+    if "_" in snapshotdate:
         # Convert 2024_06_01 to 2024-06-01
-        formatted_date = snapshot_date.replace("_", "-")
+        formatted_date = snapshotdate.replace("_", "-")
     else:
-        formatted_date = snapshot_date
+        formatted_date = snapshotdate
     
     snapshot_dt = pd.to_datetime(formatted_date)
     month_name = snapshot_dt.strftime("%B %Y")
     
     # Load datasets
-    reference_data, production_data, ref_prediction_data, prod_prediction_data = load_monitoring_datasets()
+    reference_data, production_data, ref_prediction_data, prod_prediction_data = load_monitoring_datasets(snapshotdate)
     
     # 1. DATA DRIFT REPORT
     if not reference_data.empty and not production_data.empty:
         print(f"Creating Data Drift Report...")
         
-        data_drift_report = Report(
-            metrics=[
-                DataDriftPreset(stattest='psi', stattest_threshold=0.3),
-                generate_column_metrics(ColumnSummaryMetric)])
-        
-        data_drift_report.run(
-            reference_data=reference_data, 
-            current_data=production_data)
-        
-        reports.append(data_drift_report)
-        
-        print(f"Data drift report created")
+        try:
+            data_drift_report = Report(
+                metrics=[
+                    DataDriftPreset(stattest='psi', stattest_threshold=0.3),
+                    generate_column_metrics(ColumnSummaryMetric)])
+            
+            data_drift_report.run(
+                reference_data=reference_data, 
+                current_data=production_data)
+            
+            reports.append(data_drift_report)
+            print(f"Data drift report created")
+        except Exception as e:
+            print(f"Error creating data drift report: {e}")
         
     # 2. TARGET DRIFT REPORT (Label patterns)
-    if not reference_data.empty and not production_data.empty:
+    if not reference_data.empty and not production_data.empty and 'label' in reference_data.columns:
         print(f"Creating Target Drift Report...")
         
-        target_drift_report = Report(
-            metrics=[
-                TargetDriftPreset(),
-                ColumnDriftMetric(column_name="label", stattest='psi'),
-                ColumnDistributionMetric(column_name="label"),
-                ColumnSummaryMetric(column_name="label"),
-                ColumnQuantileMetric(column_name="label", quantile=0.5),  # Median
-                ColumnQuantileMetric(column_name="label", quantile=0.25), # 25th percentile
-                ColumnQuantileMetric(column_name="label", quantile=0.75)  # 75th percentile
-            ])
-        
-        target_drift_report.run(
-            reference_data=reference_data,
-            current_data=production_data)
-        
-        reports.append(target_drift_report)
-        
-        print(f"Target drift report created")
+        try:
+            target_drift_report = Report(
+                metrics=[
+                    TargetDriftPreset(),
+                    ColumnDriftMetric(column_name="label", stattest='psi'),
+                    ColumnDistributionMetric(column_name="label"),
+                    ColumnSummaryMetric(column_name="label"),
+                    ColumnQuantileMetric(column_name="label", quantile=0.5),  # Median
+                    ColumnQuantileMetric(column_name="label", quantile=0.25), # 25th percentile
+                    ColumnQuantileMetric(column_name="label", quantile=0.75)  # 75th percentile
+                ])
+            
+            target_drift_report.run(
+                reference_data=reference_data,
+                current_data=production_data)
+            
+            reports.append(target_drift_report)
+            print(f"Target drift report created")
+        except Exception as e:
+            print(f"Error creating target drift report: {e}")
         
     # 3. PREDICTION DRIFT REPORT (Model output patterns)
     if not ref_prediction_data.empty and not prod_prediction_data.empty:
         print(f"Creating Prediction Drift Report...")
                 
         if "model_predictions" in ref_prediction_data.columns and "model_predictions" in prod_prediction_data.columns:
-            prediction_drift_report = Report(
-                metrics=[
-                    ColumnDriftMetric(column_name="model_predictions", stattest='psi', stattest_threshold=0.3),
-                    ColumnDistributionMetric(column_name="model_predictions"),
-                    ColumnSummaryMetric(column_name="model_predictions"),
-                    ColumnQuantileMetric(column_name="model_predictions", quantile=0.95),
-                    ColumnQuantileMetric(column_name="model_predictions", quantile=0.05),
-                    DatasetSummaryMetric(),
-                    DatasetMissingValuesMetric()])
-            
-            # Create subset with just predictions for drift analysis
-            ref_pred_data = ref_prediction_data[['Customer_ID', 'model_predictions']].copy()
-            
-            prod_pred_data = prod_prediction_data[['Customer_ID', 'model_predictions']].copy()
-            
-            prediction_drift_report.run(
-                reference_data=ref_pred_data,
-                current_data=prod_pred_data
-            )
-            
-            reports.append(prediction_drift_report)
-            print("Prediction drift report created")
+            try:
+                prediction_drift_report = Report(
+                    metrics=[
+                        ColumnDriftMetric(column_name="model_predictions", stattest='psi', stattest_threshold=0.3),
+                        ColumnDistributionMetric(column_name="model_predictions"),
+                        ColumnSummaryMetric(column_name="model_predictions"),
+                        ColumnQuantileMetric(column_name="model_predictions", quantile=0.95),
+                        ColumnQuantileMetric(column_name="model_predictions", quantile=0.05),
+                        DatasetSummaryMetric(),
+                        DatasetMissingValuesMetric()])
+                
+                # Create subset with just predictions for drift analysis
+                ref_pred_data = ref_prediction_data[['Customer_ID', 'model_predictions']].copy()
+                prod_pred_data = prod_prediction_data[['Customer_ID', 'model_predictions']].copy()
+                
+                prediction_drift_report.run(
+                    reference_data=ref_pred_data,
+                    current_data=prod_pred_data
+                )
+                
+                reports.append(prediction_drift_report)
+                print("Prediction drift report created")
+            except Exception as e:
+                print(f"Error creating prediction drift report: {e}")
         
-    
     # 4. PERFORMANCE MONITORING REPORT (Model performance)
-    # Fixed: This should compare actual vs predicted, not label vs label
     if not reference_data.empty and not production_data.empty:
         print(f"Creating Performance Monitoring Report...")
         
@@ -190,190 +216,217 @@ def create_comprehensive_monthly_report(snapshot_date="2024-06-01"):
     
     return reports
 
-def create_comprehensive_monthly_test_suites(snapshot_date="2024-06-01"):
-     # Initialize test suites list
+def create_comprehensive_monthly_test_suites(snapshotdate):
+    """Create comprehensive monthly test suites"""
+    # Initialize test suites list
     test_suites = []
     
-    # Convert snapshot_date to month name for display
-    if "_" in snapshot_date:
-        formatted_date = snapshot_date.replace("_", "-")
+    # Convert snapshotdate to month name for display
+    if "_" in snapshotdate:
+        formatted_date = snapshotdate.replace("_", "-")
     else:
-        formatted_date = snapshot_date
+        formatted_date = snapshotdate
     
     snapshot_dt = pd.to_datetime(formatted_date)
     month_name = snapshot_dt.strftime("%B %Y")
     
     # Load datasets
-    reference_data, production_data, ref_prediction_data, prod_prediction_data = load_monitoring_datasets()
+    reference_data, production_data, ref_prediction_data, prod_prediction_data = load_monitoring_datasets(snapshotdate)
     
     # 1. DATA DRIFT TEST SUITE
     if not reference_data.empty and not production_data.empty:
         print(f"Creating Data Drift Test Suite...")
         
-        data_drift_tests = TestSuite(tests=[
-            DataDriftTestPreset(
-                stattest='psi', 
-                stattest_threshold=0.3,
-                drift_share=0.3  # Allow up to 30% of features to drift
-            ),
-            # Data quality tests
-            TestNumberOfColumns(),
-            TestNumberOfRows(),
-            TestNumberOfConstantColumns(),
-        ])
-        
-        data_drift_tests.run(
-            reference_data=reference_data,
-            current_data=production_data
-        )
-        
-        test_suites.append(data_drift_tests)
-        print(f"Data drift test suite created")
+        try:
+            data_drift_tests = TestSuite(tests=[
+                DataDriftTestPreset(
+                    stattest='psi', 
+                    stattest_threshold=0.3,
+                    drift_share=0.3  # Allow up to 30% of features to drift
+                ),
+                # Data quality tests
+                TestNumberOfColumns(),
+                TestNumberOfRows(),
+                TestNumberOfConstantColumns(),
+            ])
+            
+            data_drift_tests.run(
+                reference_data=reference_data,
+                current_data=production_data
+            )
+            
+            test_suites.append(data_drift_tests)
+            print(f"Data drift test suite created")
+        except Exception as e:
+            print(f"Error creating data drift test suite: {e}")
     
     # 2. DATA QUALITY TEST SUITE
     if not production_data.empty:
         print(f"Creating Data Quality Test Suite...")
         
-        data_quality_tests = TestSuite(tests=[
-            DataQualityTestPreset(),
-            # Custom data quality tests
-            TestNumberOfMissingValues(),
-            TestNumberOfRowsWithMissingValues(),
-            TestNumberOfDuplicatedRows(),
-            TestNumberOfDuplicatedColumns(),
-        ])
-        
-        data_quality_tests.run(
-            reference_data=reference_data, 
-            current_data=production_data
-        )
-        
-        test_suites.append(data_quality_tests)
-        print(f"Data quality test suite created")
+        try:
+            data_quality_tests = TestSuite(tests=[
+                DataQualityTestPreset(),
+                # Custom data quality tests
+                TestNumberOfMissingValues(),
+                TestNumberOfRowsWithMissingValues(),
+                TestNumberOfDuplicatedRows(),
+                TestNumberOfDuplicatedColumns(),
+            ])
+            
+            data_quality_tests.run(
+                reference_data=reference_data if not reference_data.empty else None, 
+                current_data=production_data
+            )
+            
+            test_suites.append(data_quality_tests)
+            print(f"Data quality test suite created")
+        except Exception as e:
+            print(f"Error creating data quality test suite: {e}")
     
     # 3. TARGET DRIFT TEST SUITE
     if not reference_data.empty and not production_data.empty and 'label' in reference_data.columns:
         print(f"Creating Target Drift Test Suite...")
         
-        target_drift_tests = TestSuite(tests=[
-            TestColumnDrift(
-                column_name="label",
-                stattest='psi',
-                stattest_threshold=0.2
-            ),
-            # Target distribution tests
-            TestColumnValueMean(column_name="label"),
-            TestTargetFeaturesCorrelations()
-        ])
-        
-        target_drift_tests.run(
-            reference_data=reference_data,
-            current_data=production_data
-        )
-        
-        test_suites.append(target_drift_tests)
-        print(f"Target drift test suite created")
+        try:
+            target_drift_tests = TestSuite(tests=[
+                TestColumnDrift(
+                    column_name="label",
+                    stattest='psi',
+                    stattest_threshold=0.2
+                ),
+                # Target distribution tests
+                TestColumnValueMean(column_name="label"),
+                TestTargetFeaturesCorrelations()
+            ])
+            
+            target_drift_tests.run(
+                reference_data=reference_data,
+                current_data=production_data
+            )
+            
+            test_suites.append(target_drift_tests)
+            print(f"Target drift test suite created")
+        except Exception as e:
+            print(f"Error creating target drift test suite: {e}")
     
     # 4. PREDICTION DRIFT TEST SUITE
     if not ref_prediction_data.empty and not prod_prediction_data.empty:
         print(f"Creating Prediction Drift Test Suite...")
         
         if "model_predictions" in ref_prediction_data.columns and "model_predictions" in prod_prediction_data.columns:
-            prediction_drift_tests = TestSuite(tests=[
-                TestColumnDrift(
-                    column_name="model_predictions",
-                    stattest='psi',
-                    stattest_threshold=0.2
-                ),
-                # Prediction quality tests
-                TestColumnValueMean(column_name="model_predictions"),
-                TestColumnValueStd(column_name="model_predictions"),
-                TestColumnQuantile(
-                    column_name="model_predictions",
-                    quantile=0.95
-                ),
-                TestColumnQuantile(
-                    column_name="model_predictions", 
-                    quantile=0.05
+            try:
+                prediction_drift_tests = TestSuite(tests=[
+                    TestColumnDrift(
+                        column_name="model_predictions",
+                        stattest='psi',
+                        stattest_threshold=0.2
+                    ),
+                    # Prediction quality tests
+                    TestColumnValueMean(column_name="model_predictions"),
+                    TestColumnValueStd(column_name="model_predictions"),
+                    TestColumnQuantile(
+                        column_name="model_predictions",
+                        quantile=0.95
+                    ),
+                    TestColumnQuantile(
+                        column_name="model_predictions", 
+                        quantile=0.05
+                    )
+                ])
+                
+                # Create subset with just predictions for drift analysis
+                ref_pred_data = ref_prediction_data[['Customer_ID', 'model_predictions']].copy()
+                prod_pred_data = prod_prediction_data[['Customer_ID', 'model_predictions']].copy()
+                
+                prediction_drift_tests.run(
+                    reference_data=ref_pred_data,
+                    current_data=prod_pred_data
                 )
-            ])
-            
-            # Create subset with just predictions for drift analysis
-            ref_pred_data = ref_prediction_data[['Customer_ID', 'model_predictions']].copy()
-            prod_pred_data = prod_prediction_data[['Customer_ID', 'model_predictions']].copy()
-            
-            prediction_drift_tests.run(
-                reference_data=ref_pred_data,
-                current_data=prod_pred_data
-            )
-            
-            test_suites.append(prediction_drift_tests)
-            print("Prediction drift test suite created")
+                
+                test_suites.append(prediction_drift_tests)
+                print("Prediction drift test suite created")
+            except Exception as e:
+                print(f"Error creating prediction drift test suite: {e}")
     
     # 5. DATA STABILITY TEST SUITE
     if not production_data.empty:
         print(f"Creating Data Stability Test Suite...")
         
-        data_stability_tests = TestSuite(tests=[
-            DataStabilityTestPreset(),
-            # Custom stability tests
-            TestNumberOfRowsWithMissingValues(),
-            TestNumberOfConstantColumns(),
-            TestNumberOfMissingValues()
-        ])
-        
-        data_stability_tests.run(
-            reference_data=reference_data, 
-            current_data=production_data
-        )
-        
-        test_suites.append(data_stability_tests)
-        print(f"Data stability test suite created")
+        try:
+            data_stability_tests = TestSuite(tests=[
+                DataStabilityTestPreset(),
+                # Custom stability tests
+                TestNumberOfRowsWithMissingValues(),
+                TestNumberOfConstantColumns(),
+                TestNumberOfMissingValues()
+            ])
+            
+            data_stability_tests.run(
+                reference_data=reference_data if not reference_data.empty else None, 
+                current_data=production_data
+            )
+            
+            test_suites.append(data_stability_tests)
+            print(f"Data stability test suite created")
+        except Exception as e:
+            print(f"Error creating data stability test suite: {e}")
     
     # 6. MODEL PERFORMANCE TEST SUITE (if ground truth is available)
     if not reference_data.empty and not production_data.empty:
         print(f"Creating Model Performance Test Suite...")
         
-        # This assumes you have actual labels for performance evaluation
-        performance_tests = TestSuite(tests=[
-            NoTargetPerformanceTestPreset(),
-            # Custom performance tests
-            TestNumberOfMissingValues(),
-            TestColumnValueMean(column_name="label")
-        ])
-        
-        performance_tests.run(
-            reference_data=reference_data,
-            current_data=production_data
-        )
-        
-        test_suites.append(performance_tests)
-        print("Model performance test suite created")
+        try:
+            # This assumes you have actual labels for performance evaluation
+            performance_tests = TestSuite(tests=[
+                NoTargetPerformanceTestPreset(),
+                # Custom performance tests
+                TestNumberOfMissingValues(),
+            ])
+            
+            # Only add label-specific tests if label column exists
+            if 'label' in production_data.columns:
+                performance_tests.tests.append(TestColumnValueMean(column_name="label"))
+            
+            performance_tests.run(
+                reference_data=reference_data,
+                current_data=production_data
+            )
+            
+            test_suites.append(performance_tests)
+            print("Model performance test suite created")
+        except Exception as e:
+            print(f"Error creating model performance test suite: {e}")
     
     print(f"\n🧪 Created {len(test_suites)} test suites for {month_name}")
     return test_suites
 
-def run_monthly_monitoring_with_tests(workspace, snapshot_date: str = "2024_06_01") -> Dict[str, List]:
+def run_monthly_monitoring_with_tests(workspace, snapshotdate) -> Dict[str, List]:
     """
     Run complete monthly monitoring for a specific snapshot date
     """
-    print(f"\n🚀 STARTING MONTHLY MONITORING WITH TESTS FOR {snapshot_date}")
+    print(f"\n🚀 STARTING MONTHLY MONITORING WITH TESTS FOR {snapshotdate}")
     print("=" * 80)
     
     try:
         # Create reports
-        reports = create_comprehensive_monthly_report(snapshot_date)
+        reports = create_comprehensive_monthly_report(snapshotdate)
         
         # Create test suites
-        test_suites = create_comprehensive_monthly_test_suites(snapshot_date)
+        test_suites = create_comprehensive_monthly_test_suites(snapshotdate)
         
         # Get or create project
         try:
-            project = workspace.search_project(PROJECT_NAME)[0]
-            print(f"✅ Found existing project '{PROJECT_NAME}'")
-        except (IndexError, AttributeError):
+            projects = workspace.search_project(PROJECT_NAME)
+            if projects:
+                project = projects[0]
+                print(f"✅ Found existing project '{PROJECT_NAME}'")
+            else:
+                project = workspace.create_project(PROJECT_NAME, PROJECT_DESCRIPTION)
+                print(f"✅ Created new project '{PROJECT_NAME}'")
+        except Exception as e:
             project = workspace.create_project(PROJECT_NAME, PROJECT_DESCRIPTION)
-            print(f"✅ Created new project '{PROJECT_NAME}'")
+            print(f"✅ Created new project '{PROJECT_NAME}' (fallback)")
 
         project_id = project.id 
                 
@@ -426,12 +479,12 @@ def run_monthly_monitoring_with_tests(workspace, snapshot_date: str = "2024_06_0
         return {
             'reports': reports,
             'test_suites': test_suites,
-            'snapshot_date': snapshot_date,
+            'snapshotdate': snapshotdate,
             'project_id': project_id
         }
         
     except Exception as e:
-        print(f"❌ Error in monthly monitoring for {snapshot_date}: {str(e)}")
+        print(f"❌ Error in monthly monitoring for {snapshotdate}: {str(e)}")
         raise
 
 # ===== WORKSPACE AND PROJECT SETUP =====
@@ -451,12 +504,31 @@ def get_or_create_workspace():
 
 # ===== MAIN SCRIPT ENTRY POINT =====
 if __name__ == "__main__":
+
+    # Setup argparse to parse command-line arguments
+    parser = argparse.ArgumentParser(description="Run model monitoring job")
+    parser.add_argument("--snapshotdate", type=str, required=True, help="Snapshot date in YYYY-MM-DD format")
+    
+    args = parser.parse_args()
+    
+    # Get the snapshot date from args
+    snapshotdate = args.snapshotdate
+    
+    # Validate date format
+    try:
+        datetime.datetime.strptime(snapshotdate, "%Y-%m-%d")
+    except ValueError:
+        print(f"Error: Invalid date format '{snapshotdate}'. Please use YYYY-MM-DD format.")
+        exit(1)
+    
+    print(f"Running model monitoring for snapshot date: {snapshotdate}")
+    
     workspace = get_or_create_workspace()
 
-    result = run_monthly_monitoring_with_tests(workspace, snapshot_date="2024_06_01")
+    result = run_monthly_monitoring_with_tests(workspace, snapshotdate)
     print(f"\n🎉 Monthly monitoring with tests completed successfully!")
     print(f"📊 Generated {len(result['reports'])} reports and {len(result['test_suites'])} test suites")
-
     print(f"📁 Project ID: {result['project_id']}")
     
-    
+    print(f"\n💡 To view the monitoring dashboard, run:")
+    print(f"evidently ui --workspace {WORKSPACE_NAME}")

@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   airflow-init:
     build: .
@@ -5,13 +7,39 @@ services:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__CORE__FERNET_KEY=PAqBeGJLJTYFzVkOGHWIYXdLO7XdXz5yTdxAGJe9ezM=
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      # Java and Spark configuration
+      - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      - PYSPARK_PYTHON=/usr/local/bin/python
+      - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
+      - SPARK_DRIVER_MEMORY=1g
+      - SPARK_EXECUTOR_MEMORY=1g
+      # Java 17 + Spark compatibility flags
+      - SPARK_SUBMIT_OPTS=--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED
+      - JAVA_TOOL_OPTIONS=--add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+      # Python path configuration
+      - PYTHONPATH=/opt/airflow:/opt/airflow/scripts
     volumes:
       - airflow_data:/opt/airflow
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts
-    entrypoint: >
-      /bin/bash -c "airflow db init &&
-      airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com || true"
+      - ./utils:/opt/airflow/utils
+      - ./data:/opt/airflow/data
+      - ./datamart:/opt/airflow/datamart
+      - ./models:/opt/airflow/models
+      - ./monitoring:/opt/airflow/monitoring
+    entrypoint: |
+      /bin/bash -c "
+        airflow db init &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com || true
+      "
+    restart: "no"
 
   airflow-webserver:
     build: .
@@ -21,13 +49,28 @@ services:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__CORE__FERNET_KEY=PAqBeGJLJTYFzVkOGHWIYXdLO7XdXz5yTdxAGJe9ezM=
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      # Java and Spark configuration
+      - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      - PYSPARK_PYTHON=/usr/local/bin/python
+      - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
+      - SPARK_DRIVER_MEMORY=1g
+      - SPARK_EXECUTOR_MEMORY=1g
+      # Python path configuration - THIS IS THE KEY FIX
+      - PYTHONPATH=/opt/airflow:/opt/airflow/scripts
     volumes:
       - airflow_data:/opt/airflow
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts
+      - ./utils:/opt/airflow/utils
+      - ./data:/opt/airflow/data
+      - ./datamart:/opt/airflow/datamart
+      - ./models:/opt/airflow/models
+      - ./monitoring:/opt/airflow/monitoring
     ports:
       - "8080:8080"
     command: webserver
+    restart: always
 
   airflow-scheduler:
     build: .
@@ -37,11 +80,26 @@ services:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__CORE__FERNET_KEY=PAqBeGJLJTYFzVkOGHWIYXdLO7XdXz5yTdxAGJe9ezM=
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      # Java and Spark configuration
+      - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+      - PYSPARK_PYTHON=/usr/local/bin/python
+      - PYSPARK_DRIVER_PYTHON=/usr/local/bin/python
+      - SPARK_DRIVER_MEMORY=1g
+      - SPARK_EXECUTOR_MEMORY=1g
+      # Python path configuration - THIS IS THE KEY FIX
+      - PYTHONPATH=/opt/airflow:/opt/airflow/scripts
     volumes:
       - airflow_data:/opt/airflow
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts
+      - ./utils:/opt/airflow/utils
+      - ./data:/opt/airflow/data
+      - ./datamart:/opt/airflow/datamart
+      - ./models:/opt/airflow/models
+      - ./monitoring:/opt/airflow/monitoring
     command: scheduler
+    restart: always
 
 volumes:
   airflow_data:
