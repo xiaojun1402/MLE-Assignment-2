@@ -28,7 +28,7 @@ services:
       - ./datamart:/opt/airflow/datamart
       - ./models:/opt/airflow/models
       - ./monitoring:/opt/airflow/monitoring
-    entrypoint: |
+    entrypoint:
       /bin/bash -c "
         airflow db init &&
         airflow users create \

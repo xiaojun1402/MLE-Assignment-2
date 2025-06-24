@@ -60,7 +60,7 @@ RUN chown -R airflow:root /opt/airflow/models \
 USER airflow
 
 # Install Python dependencies using requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
 
 # Set proper working directory
 WORKDIR /opt/airflow
