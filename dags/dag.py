@@ -36,7 +36,7 @@ with DAG(
     default_args=default_args,
     description=f'End-to-end ML pipeline - Default: {DEFAULT_SNAPSHOT_DATE} (customizable)',
     schedule_interval=None,  # Manual only
-    start_date=datetime(2024, 6, 1),
+    start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
     # Add DAG documentation

@@ -46,7 +46,10 @@ def process_silver_loan_table(snapshot_date_str, bronze_base_dir, silver_base_di
     
     df = df.withColumn("mob", col("installment_num"))
     df = df.withColumn("installments_missed", F.ceil(col("overdue_amt") / col("due_amt")).cast(IntegerType())).fillna(0)
-    df = df.withColumn("first_missed_date", F.when(col("installments_missed") > 0, F.add_months(col("snapshot_date"), -1 * col("installments_missed"))).cast(DateType()))
+    df = df.withColumn("first_missed_date", 
+            F.when(col("installments_missed") > 0, 
+                F.expr("add_months(snapshot_date, -installments_missed)")
+            ).cast(DateType()))
     df = df.withColumn("dpd", F.when(col("overdue_amt") > 0.0, F.datediff(col("snapshot_date"), col("first_missed_date"))).otherwise(0).cast(IntegerType()))
     
     # Save silver table as parquet

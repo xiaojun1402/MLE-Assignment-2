@@ -60,6 +60,7 @@ RUN chown -R airflow:root /opt/airflow/models \
 USER airflow
 
 # Install Python dependencies using requirements.txt
+# First install lighter packages
 RUN pip install --default-timeout=1000 --no-cache-dir -r requirements.txt
 
 # Set proper working directory
