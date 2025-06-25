@@ -28,10 +28,10 @@ def process_bronze_table(snapshot_date_str, bronze_base_dir, spark):
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
     
     datasets = {
-        "lms": "data/lms_loan_daily.csv",
-        "financials": "data/features_financials.csv",
-        "attributes": "data/features_attributes.csv",
-        "clickstream": "data/feature_clickstream.csv"
+        "lms": "Data/lms_loan_daily.csv",
+        "financials": "Data/features_financials.csv",
+        "attributes": "Data/features_attributes.csv",
+        "clickstream": "Data/feature_clickstream.csv"
     }
 
     for name, path in datasets.items():
