@@ -1,6 +1,12 @@
 services:
   airflow-init:
     build: .
+    healthcheck:
+      test: ["CMD", "airflow", "db", "check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT=300
@@ -29,8 +35,9 @@ services:
       - ./utils:/opt/airflow/utils
       - ./Data:/opt/airflow/Data
       - ./datamart:/opt/airflow/datamart
-      - ./models:/opt/airflow/models
-      - ./monitoring:/opt/airflow/monitoring
+      - ./model_bank:/opt/airflow/model_bank
+      - ./monitoring_reports:/opt/airflow/monitoring_reports
+      - ./monitoring_workspace:/opt/airflow/monitoring_workspace
     entrypoint:
       /bin/bash -c "
         airflow db init &&
@@ -40,14 +47,23 @@ services:
           --firstname Admin \
           --lastname User \
           --role Admin \
-          --email admin@example.com || true
+          --email admin@example.com || true &&
+        echo 'Initialization complete, keeping container alive...' &&
+        tail -f /dev/null
       "
     restart: "no"
 
   airflow-webserver:
     build: .
     depends_on:
-      - airflow-init
+      airflow-init:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT=300
@@ -73,8 +89,9 @@ services:
       - ./utils:/opt/airflow/utils
       - ./Data:/opt/airflow/Data
       - ./datamart:/opt/airflow/datamart
-      - ./models:/opt/airflow/models
-      - ./monitoring:/opt/airflow/monitoring
+      - ./model_bank:/opt/airflow/model_bank
+      - ./monitoring_reports:/opt/airflow/monitoring_reports
+      - ./monitoring_workspace:/opt/airflow/monitoring_workspace
     ports:
       - "8080:8080"
     command: webserver
@@ -83,7 +100,14 @@ services:
   airflow-scheduler:
     build: .
     depends_on:
-      - airflow-init
+      airflow-init:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname) || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT=300
@@ -111,8 +135,9 @@ services:
       - ./utils:/opt/airflow/utils
       - ./Data:/opt/airflow/Data
       - ./datamart:/opt/airflow/datamart
-      - ./models:/opt/airflow/models
-      - ./monitoring:/opt/airflow/monitoring
+      - ./model_bank:/opt/airflow/model_bank
+      - ./monitoring_reports:/opt/airflow/monitoring_reports
+      - ./monitoring_workspace:/opt/airflow/monitoring_workspace
     command: scheduler
     restart: always
 

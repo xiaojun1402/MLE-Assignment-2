@@ -35,11 +35,13 @@ WORKDIR /opt/airflow
 
 # Create necessary directories for the ML pipeline (as root for proper permissions)
 RUN mkdir -p /opt/airflow/models \
-    && mkdir -p /opt/airflow/monitoring \
+    && mkdir -p /opt/airflow/monitoring_reports \
+    && mkdir -p /opt/airflow/monitoring_workspace \
     && mkdir -p /opt/airflow/logs/ml_pipeline \
     && mkdir -p /opt/airflow/datamart/bronze \
     && mkdir -p /opt/airflow/datamart/silver \
     && mkdir -p /opt/airflow/datamart/gold \
+    && mkdir -p /opt/airflow/datamart/gold/model_monitoring \
     && mkdir -p /opt/airflow/scripts \
     && mkdir -p /opt/airflow/scripts/utils \
     && mkdir -p /opt/airflow/utils \
@@ -50,7 +52,8 @@ COPY requirements.txt ./
 
 # Change ownership of directories to airflow user
 RUN chown -R airflow:root /opt/airflow/models \
-    && chown -R airflow:root /opt/airflow/monitoring \
+    && chown -R airflow:root /opt/airflow/monitoring_reports \
+    && chown -R airflow:root /opt/airflow/monitoring_workspace \
     && chown -R airflow:root /opt/airflow/datamart \
     && chown -R airflow:root /opt/airflow/scripts \
     && chown -R airflow:root /opt/airflow/utils \
