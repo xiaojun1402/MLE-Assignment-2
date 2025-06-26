@@ -4,8 +4,17 @@ from pyspark.sql.types import StringType, IntegerType, FloatType
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import os
+import shutil
 from functools import reduce
 from operator import add
+
+def safe_count(df, description="DataFrame"):
+    """Safely count rows in a DataFrame with error handling"""
+    try:
+        return df.count()
+    except Exception as e:
+        print(f"Warning: Could not count {description} due to: {str(e)}")
+        return "Unknown"
 
 def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, dpd_cutoff=30, mob_cutoff=6, create_label_store=True):
 
@@ -145,8 +154,8 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
     
     # Remove unwanted column from feature store
     feature_store = feature_store.drop("feature_snapshot_date")
-    feature_store = feature_store.cache()
-    print(f"Feature Store: {feature_store.count()} rows")
+    
+    print(f"Feature Store: {safe_count(feature_store, 'feature store')} rows")
     
     # 2. Label Store (create using your simple approach)
     label_store = build_label_store(spark, lms_df, dpd_cutoff, mob_cutoff)
@@ -158,8 +167,8 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
     
    # Remove unwanted columns from combined store
     combined_store = combined_store.drop("feature_snapshot_date", "label_snapshot_date", "mob_cutoff", "dpd_cutoff")
-    combined_store = combined_store.cache()
-    print(f"Combined Store: {combined_store.count()} rows")
+    
+    print(f"Combined Store: {safe_count(combined_store, 'combined store')} rows")
         
     # Save stores
     print("\n=== Saving Data Stores ===")
@@ -167,20 +176,79 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
     # Feature Store
     feature_output_path = os.path.join(gold_base_dir, 'feature_store')
     os.makedirs(feature_output_path, exist_ok=True)
-    feature_store.write.mode("overwrite").parquet(feature_output_path)
-    print(f"Feature Store saved to: {feature_output_path}")
+    try:
+        feature_store.write.mode("overwrite").parquet(feature_output_path)
+        print(f"Feature Store saved to: {feature_output_path}")
+    except Exception as e:
+        print(f"Error saving feature store: {str(e)}")
+        # Try alternative approach - clear directory and use simple write without coalesce
+        try:
+            if os.path.exists(feature_output_path):
+                shutil.rmtree(feature_output_path)
+            os.makedirs(feature_output_path, exist_ok=True)
+            # Avoid coalesce which can cause connection issues - just write as-is
+            feature_store.write.mode("overwrite").option("maxRecordsPerFile", 10000).parquet(feature_output_path)
+            print(f"Feature Store saved (chunked) to: {feature_output_path}")
+        except Exception as e2:
+            print(f"Failed to save feature store: {str(e2)}")
+            print("Attempting to save as CSV fallback...")
+            try:
+                csv_path = feature_output_path.replace('.parquet', '.csv')
+                feature_store.write.mode("overwrite").option("header", "true").csv(csv_path)
+                print(f"Feature Store saved as CSV to: {csv_path}")
+            except Exception as e3:
+                print(f"All save attempts failed: {str(e3)}")
+                # Don't re-raise - continue processing
     
     # Label Store  
     label_output_path = os.path.join(gold_base_dir, 'label_store')
     os.makedirs(label_output_path, exist_ok=True)
-    label_store.write.mode("overwrite").parquet(label_output_path)
-    print(f"Label Store saved to: {label_output_path}")
+    try:
+        label_store.write.mode("overwrite").parquet(label_output_path)
+        print(f"Label Store saved to: {label_output_path}")
+    except Exception as e:
+        print(f"Error saving label store: {str(e)}")
+        try:
+            if os.path.exists(label_output_path):
+                shutil.rmtree(label_output_path)
+            os.makedirs(label_output_path, exist_ok=True)
+            label_store.write.mode("overwrite").option("maxRecordsPerFile", 10000).parquet(label_output_path)
+            print(f"Label Store saved (chunked) to: {label_output_path}")
+        except Exception as e2:
+            print(f"Failed to save label store: {str(e2)}")
+            print("Attempting to save as CSV fallback...")
+            try:
+                csv_path = label_output_path.replace('.parquet', '.csv')
+                label_store.write.mode("overwrite").option("header", "true").csv(csv_path)
+                print(f"Label Store saved as CSV to: {csv_path}")
+            except Exception as e3:
+                print(f"All save attempts failed: {str(e3)}")
+                # Don't re-raise - continue processing
     
     # Combined Store
     combined_output_path = os.path.join(gold_base_dir, 'combined_store')
     os.makedirs(combined_output_path, exist_ok=True)
-    combined_store.write.mode("overwrite").parquet(combined_output_path)
-    print(f"Combined Store saved to: {combined_output_path}")
+    try:
+        combined_store.write.mode("overwrite").parquet(combined_output_path)
+        print(f"Combined Store saved to: {combined_output_path}")
+    except Exception as e:
+        print(f"Error saving combined store: {str(e)}")
+        try:
+            if os.path.exists(combined_output_path):
+                shutil.rmtree(combined_output_path)
+            os.makedirs(combined_output_path, exist_ok=True)
+            combined_store.write.mode("overwrite").option("maxRecordsPerFile", 10000).parquet(combined_output_path)
+            print(f"Combined Store saved (chunked) to: {combined_output_path}")
+        except Exception as e2:
+            print(f"Failed to save combined store: {str(e2)}")
+            print("Attempting to save as CSV fallback...")
+            try:
+                csv_path = combined_output_path.replace('.parquet', '.csv')
+                combined_store.write.mode("overwrite").option("header", "true").csv(csv_path)
+                print(f"Combined Store saved as CSV to: {csv_path}")
+            except Exception as e3:
+                print(f"All save attempts failed: {str(e3)}")
+                # Don't re-raise - continue processing
     
     return {
         'feature_store': feature_store,

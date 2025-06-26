@@ -224,7 +224,7 @@ def main(snapshotdate):
     
     # --- Load Data ---
     print("\n=== Loading Combined Store ===")
-    combined_store = spark.read.parquet("datamart/gold/combined_store")
+    combined_store = spark.read.parquet("/opt/airflow/datamart/gold/combined_store")
 
     # --- Split Data into Train - Test - OOT ---
     print("\n=== Splitting Data into Train - Test - OOT ===")
@@ -354,7 +354,7 @@ def main(snapshotdate):
     import os
 
     # Create monitoring directory
-    monitoring_dir = "datamart/gold/model_monitoring"
+    monitoring_dir = "/opt/airflow/datamart/gold/model_monitoring"
     os.makedirs(monitoring_dir, exist_ok=True)
 
     # Save reference dataset (training data) for Evidently with reduced features
@@ -510,9 +510,9 @@ def main(snapshotdate):
         scorer = make_scorer(roc_auc_score)
         
         if search_type == 'grid':
-            search = GridSearchCV(estimator, param_grid, scoring=scorer, cv=5, verbose=1, n_jobs=-1)
+            search = GridSearchCV(estimator, param_grid, scoring=scorer, cv=3, verbose=1, n_jobs=-1)
         else:
-            search = RandomizedSearchCV(estimator, param_grid, scoring=scorer, n_iter=50, cv=5, verbose=1, random_state=42, n_jobs=-1)
+            search = RandomizedSearchCV(estimator, param_grid, scoring=scorer, n_iter=10, cv=3, verbose=1, random_state=42, n_jobs=-1)
         
         search.fit(X_train_processed, y_train)
         
@@ -561,6 +561,7 @@ def main(snapshotdate):
         }
 
         # Save model
+        model_dir = "/opt/airflow/" + model_dir if not model_dir.startswith("/") else model_dir
         os.makedirs(model_dir, exist_ok=True)
         file_path = os.path.join(model_dir, model_artefact['model_version'] + '.pkl')
         with open(file_path, 'wb') as file:
@@ -574,18 +575,16 @@ def main(snapshotdate):
         y_pred_oot = loaded['model'].predict_proba(X_oot_processed)[:, 1]
         print(f"{model_name} model reloaded - OOT AUC:", roc_auc_score(y_oot, y_pred_oot))
 
-    # XGBoost
+    # XGBoost - Optimized for faster training
     xgb_model = xgb.XGBClassifier(eval_metric='logloss', random_state=88)
     xgb_param = {
-        'n_estimators': [50, 100, 200],
-        'max_depth': [3, 4, 5, 6],
-        'learning_rate': [0.01, 0.05, 0.1, 0.2],
-        'subsample': [0.7, 0.8, 0.9],
-        'colsample_bytree': [0.7, 0.8, 0.9],
-        'gamma': [0, 0.1, 0.2],
-        'min_child_weight': [1, 3, 5],
-        'reg_alpha': [0, 0.1, 0.5, 1],
-        'reg_lambda': [1, 1.5, 2, 3]
+        'n_estimators': [50, 100],
+        'max_depth': [3, 4, 5],
+        'learning_rate': [0.05, 0.1],
+        'subsample': [0.8, 0.9],
+        'colsample_bytree': [0.8, 0.9],
+        'reg_alpha': [0, 0.1],
+        'reg_lambda': [1, 2]
     }
     
     train_and_save_model("XGB", xgb_model, xgb_param, search_type='random')
@@ -596,15 +595,14 @@ def main(snapshotdate):
     
     train_and_save_model("LOGREG", logreg, logreg_param, search_type='grid')
 
-    # Random Forest
+    # Random Forest - Optimized for faster training
     rf_model = RandomForestClassifier(random_state=88)
     rf_param = {
-        'n_estimators': [100, 200, 300],
-        'max_depth': [None, 5, 10, 20],
-        'min_samples_split': [2, 5, 10],
-        'min_samples_leaf': [1, 2, 4],
-        'max_features': ['auto', 'sqrt', 'log2'],
-        'bootstrap': [True, False]
+        'n_estimators': [100, 200],
+        'max_depth': [10, 20],
+        'min_samples_split': [2, 5],
+        'min_samples_leaf': [1, 2],
+        'max_features': ['sqrt', 'log2']
     }
     
     train_and_save_model("RF", rf_model, rf_param, search_type='random')

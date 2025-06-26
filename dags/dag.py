@@ -27,7 +27,7 @@ def get_snapshot_date(**context):
 default_args = {
     'owner': 'ml_engineer',
     'depends_on_past': False,
-    'retries': 1,
+    'retries': 0,
     'retry_delay': timedelta(minutes=5),
 }
 
@@ -105,7 +105,7 @@ with DAG(
             'cd /opt/airflow/scripts && '
             'python3 model_inference.py '
             '--snapshotdate "{{ ti.xcom_pull(task_ids="get_snapshot_date") }}" '
-            '--modelname "XGB_model_{{ ti.xcom_pull(task_ids="get_snapshot_date") | replace("-", "") }}.pkl"'
+            '--modelname "XGB_model_{{ ti.xcom_pull(task_ids="get_snapshot_date") | replace("-", "_") }}.pkl"'
         ),
     )
 

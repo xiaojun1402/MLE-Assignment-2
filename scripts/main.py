@@ -33,10 +33,15 @@ import utils.data_processing_gold_table_v2
 def main(snapshotdate):
     print('\n\n---starting job---\n\n')
     
-    # Initialize SparkSession
+    # Initialize SparkSession with optimized settings for containerized environment
     spark = pyspark.sql.SparkSession.builder \
-        .appName("dev") \
-        .master("local[*]") \
+        .appName("ml_pipeline_data_processing") \
+        .master("local[2]") \
+        .config("spark.driver.memory", "1g") \
+        .config("spark.executor.memory", "1g") \
+        .config("spark.sql.adaptive.enabled", "true") \
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
         .getOrCreate()
 
     # Set log level to ERROR to hide warnings
@@ -46,7 +51,7 @@ def main(snapshotdate):
     date_str = snapshotdate 
 
     # create bronze datalake
-    bronze_base_dir = "datamart/bronze/"
+    bronze_base_dir = "/opt/airflow/datamart/bronze/"
     
     if not os.path.exists(bronze_base_dir):
         os.makedirs(bronze_base_dir)
@@ -55,7 +60,7 @@ def main(snapshotdate):
     utils.data_processing_bronze_table.process_bronze_table(date_str, bronze_base_dir, spark)
 
     # create silver datalake
-    silver_base_dir = "datamart/silver/"
+    silver_base_dir = "/opt/airflow/datamart/silver/"
 
     if not os.path.exists(silver_base_dir):
         os.makedirs(silver_base_dir)
@@ -67,7 +72,7 @@ def main(snapshotdate):
     utils.data_processing_silver_table.process_silver_clickstream_table(date_str, bronze_base_dir, silver_base_dir, spark)
 
     # create gold datalake
-    gold_base_dir = "datamart/gold/"
+    gold_base_dir = "/opt/airflow/datamart/gold/"
 
     if not os.path.exists(gold_base_dir):
         os.makedirs(gold_base_dir)

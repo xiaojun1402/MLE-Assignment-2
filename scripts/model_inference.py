@@ -261,7 +261,7 @@ def main(snapshotdate, modelname):
     config["snapshot_date_str"] = snapshotdate
     config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
     config["model_name"] = modelname
-    config["model_bank_directory"] = "model_bank/"
+    config["model_bank_directory"] = "/opt/airflow/model_bank/"
     config["model_artefact_filepath"] = config["model_bank_directory"] + config["model_name"]
     
     # Calculate training period dates
@@ -282,7 +282,7 @@ def main(snapshotdate, modelname):
     print(f"\nModel loaded successfully! {config['model_artefact_filepath']}")
 
     # --- load feature store ---
-    feature_location = "datamart/gold/feature_store"
+    feature_location = "/opt/airflow/datamart/gold/feature_store"
     features_store_sdf = spark.read.parquet(feature_location)
     print(f"Feature store total rows: {features_store_sdf.count()}")
 
@@ -355,7 +355,7 @@ def main(snapshotdate, modelname):
     print("="*50)
     
     # Create output directory
-    gold_directory = f"datamart/gold/model_predictions/{config['model_name'][:-4]}/"
+    gold_directory = f"/opt/airflow/datamart/gold/model_predictions/{config['model_name'][:-4]}/"
     if not os.path.exists(gold_directory):
         os.makedirs(gold_directory)
     

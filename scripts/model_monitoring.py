@@ -33,10 +33,10 @@ warnings.filterwarnings("ignore")
 warnings.simplefilter("ignore")
 
 # to call this script: python scripts/model_monitoring.py --snapshotdate "2024-06-01"
-# toggle Evidently User Interface by running this line in the terminal: evidently ui --workspace loan_default_monitoring_workspace
+# toggle Evidently User Interface by running this line in the terminal: evidently ui --workspace /opt/airflow/monitoring_workspace/loan_default_monitoring_workspace
 
 # Configuration
-WORKSPACE_NAME = "loan_default_monitoring_workspace"
+WORKSPACE_NAME = "/opt/airflow/monitoring_workspace/loan_default_monitoring_workspace"
 PROJECT_NAME = "Loan Default Prediction Monitoring"
 PROJECT_DESCRIPTION = "Loan default prediction model with drift detection and automated testing"
 
@@ -49,7 +49,7 @@ def load_monitoring_datasets(snapshotdate):
     snapshot_formatted = snapshotdate.replace("-", "_")
     
     # Load reference data (training data)
-    reference_path = "datamart/gold/model_monitoring/reference_data.parquet"
+    reference_path = "/opt/airflow/datamart/gold/model_monitoring/reference_data.parquet"
     if not os.path.exists(reference_path):
         print(f"Warning: Reference data not found at {reference_path}")
         reference_data = pd.DataFrame()
@@ -60,7 +60,7 @@ def load_monitoring_datasets(snapshotdate):
             print(f"Reference data date range: {reference_data['snapshot_date'].min()} to {reference_data['snapshot_date'].max()}")
     
     # Load production data
-    production_path = "datamart/gold/model_monitoring/production_data.parquet"
+    production_path = "/opt/airflow/datamart/gold/model_monitoring/production_data.parquet"
     if not os.path.exists(production_path):
         print(f"Warning: Production data not found at {production_path}")
         production_data = pd.DataFrame()
@@ -69,7 +69,7 @@ def load_monitoring_datasets(snapshotdate):
         print(f"Production data loaded: {len(production_data)} rows, {len(production_data.columns)} columns")
     
     # Load reference prediction data 
-    ref_prediction_path = f"datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_training_predictions_{snapshot_formatted}.parquet"
+    ref_prediction_path = f"/opt/airflow/datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_training_predictions_{snapshot_formatted}.parquet"
     if not os.path.exists(ref_prediction_path):
         print(f"Warning: Reference prediction data not found at {ref_prediction_path}")
         ref_prediction_data = pd.DataFrame()
@@ -78,7 +78,7 @@ def load_monitoring_datasets(snapshotdate):
         print(f"Reference Prediction data loaded: {len(ref_prediction_data)} rows, {len(ref_prediction_data.columns)} columns")
     
     # Load production prediction data 
-    prod_prediction_path = f"datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_current_predictions_{snapshot_formatted}.parquet"
+    prod_prediction_path = f"/opt/airflow/datamart/gold/model_predictions/XGB_model_{snapshot_formatted}/XGB_model_{snapshot_formatted}_current_predictions_{snapshot_formatted}.parquet"
     if not os.path.exists(prod_prediction_path):
         print(f"Warning: Production prediction data not found at {prod_prediction_path}")
         prod_prediction_data = pd.DataFrame()
@@ -490,6 +490,11 @@ def run_monthly_monitoring_with_tests(workspace, snapshotdate) -> Dict[str, List
 # ===== WORKSPACE AND PROJECT SETUP =====
 def get_or_create_workspace():
     """Get existing workspace or create new one"""
+    
+    # Ensure workspace directory exists
+    workspace_dir = os.path.dirname(WORKSPACE_NAME)
+    os.makedirs(workspace_dir, exist_ok=True)
+    
     try:
         # Try to load existing workspace
         ws = Workspace.load(WORKSPACE_NAME)
