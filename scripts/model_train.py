@@ -11,11 +11,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from calendar import monthrange
 import pprint
-import pyspark
-import pyspark.sql.functions as F
-
-from pyspark.sql.functions import col
-from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
+import pyarrow.parquet as pq
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, PowerTransformer
@@ -187,14 +183,9 @@ class LogSkewnessHandler(BaseEstimator, TransformerMixin):
 def main(snapshotdate):
     print('\n\n---starting job---\n\n')
 
-    # Initialize Spark session
-    spark = pyspark.sql.SparkSession.builder \
-        .appName("Model Training") \
-        .master("local[*]") \
-        .getOrCreate()
-    
-    # Set log level to ERROR to hide warnings 
-    spark.sparkContext.setLogLevel("ERROR")
+    # Using pandas/pyarrow for data processing (more reliable than Spark in containers)
+    print("\n=== Initializing Data Processing ===")
+    print("Using pandas/pyarrow for data processing (container-optimized)")
     
     # --- Set up Configs --- 
     print("\n=== Setting up Configs ===")
@@ -224,26 +215,46 @@ def main(snapshotdate):
     
     # --- Load Data ---
     print("\n=== Loading Combined Store ===")
-    combined_store = spark.read.parquet("/opt/airflow/datamart/gold/combined_store")
+    # Use relative path from project root or current working directory
+    base_path = os.getcwd()
+    if not os.path.exists(os.path.join(base_path, "datamart")):
+        # If running from scripts/ directory, go up one level
+        base_path = os.path.dirname(base_path)
+    
+    combined_store_path = os.path.join(base_path, "datamart/gold/combined_store")
+    print(f"Loading data from: {combined_store_path}")
+    
+    # Load parquet data using pandas (more reliable than Spark in containers)
+    try:
+        combined_store = pd.read_parquet(combined_store_path, engine='pyarrow')
+        print(f"Successfully loaded combined store: {combined_store.shape[0]} rows, {combined_store.shape[1]} columns")
+    except Exception as e:
+        print(f"Error loading parquet data: {str(e)}")
+        raise RuntimeError(f"Failed to load data from {combined_store_path}")
 
     # --- Split Data into Train - Test - OOT ---
     print("\n=== Splitting Data into Train - Test - OOT ===")
-    # Convert filtered Spark DataFrame to Pandas
-    combined_df = combined_store.filter(
-        (col("snapshot_date") >= config["train_test_start_date"]) & 
-        (col("snapshot_date") <= config["oot_end_date"])
-    ).toPandas()
-
-    print(f"Combined dataset: {len(combined_df)} rows")
-
-    # Ensure snapshot_date is in datetime format
-    combined_df["snapshot_date"] = pd.to_datetime(combined_df["snapshot_date"])
-
-    # If config values are still strings, convert them to datetime as well
+    # Filter data using pandas (replacing Spark operations)
+    # IMPORTANT: Only use data up to snapshot date (no future data leakage)
+    max_data_date = pd.to_datetime(config['model_train_date'] - timedelta(days=1))  # Day before snapshot
+    
+    # Ensure snapshot_date is in datetime format for filtering
+    combined_store['snapshot_date'] = pd.to_datetime(combined_store['snapshot_date'])
+    
+    # Convert all config date values to pandas datetime for comparison
     config["train_test_start_date"] = pd.to_datetime(config["train_test_start_date"])
     config["train_test_end_date"] = pd.to_datetime(config["train_test_end_date"])
     config["oot_start_date"] = pd.to_datetime(config["oot_start_date"])
     config["oot_end_date"] = pd.to_datetime(config["oot_end_date"])
+    
+    # Apply filtering conditions
+    combined_df = combined_store[
+        (combined_store["snapshot_date"] >= config["train_test_start_date"]) & 
+        (combined_store["snapshot_date"] <= config["oot_end_date"]) &
+        (combined_store["snapshot_date"] <= max_data_date)  # No future data beyond snapshot
+    ].copy()
+
+    print(f"Combined dataset: {len(combined_df)} rows")
 
     # Train/Test dataset
     train_test_pdf = combined_df[
@@ -351,11 +362,11 @@ def main(snapshotdate):
 
     # === SAVE DATASETS FOR EVIDENTLY MONITORING ===
     print("\n=== Saving Datasets for Monitoring ===")
-    import os
 
     # Create monitoring directory
-    monitoring_dir = "/opt/airflow/datamart/gold/model_monitoring"
+    monitoring_dir = os.path.join(base_path, "datamart/gold/model_monitoring")
     os.makedirs(monitoring_dir, exist_ok=True)
+    print(f"Monitoring directory: {monitoring_dir}")
 
     # Save reference dataset (training data) for Evidently with reduced features
     reference_data = train_pdf[feature_cols_reduced + ['label', 'snapshot_date']].copy()
@@ -374,14 +385,13 @@ def main(snapshotdate):
 
     print(f"Loading production data for period: {production_start_date.date()} to {production_end_date.date()}")
 
-    # Load June 2024 data separately from combined store
+    # Load production data using pandas filtering
     try:
-        production_data_spark = combined_store.filter(
-            (col("snapshot_date") >= production_start_date.strftime('%Y-%m-%d')) & 
-            (col("snapshot_date") <= production_end_date.strftime('%Y-%m-%d'))
-        )
+        production_data = combined_store[
+            (combined_store["snapshot_date"] >= production_start_date) & 
+            (combined_store["snapshot_date"] <= production_end_date)
+        ].copy()
         
-        production_data = production_data_spark.toPandas()
         print(f"Loaded production data: {len(production_data)} rows")
         
         if len(production_data) == 0:
@@ -512,7 +522,7 @@ def main(snapshotdate):
         if search_type == 'grid':
             search = GridSearchCV(estimator, param_grid, scoring=scorer, cv=3, verbose=1, n_jobs=-1)
         else:
-            search = RandomizedSearchCV(estimator, param_grid, scoring=scorer, n_iter=10, cv=3, verbose=1, random_state=42, n_jobs=-1)
+            search = RandomizedSearchCV(estimator, param_grid, scoring=scorer, n_iter=2, cv=2, verbose=1, random_state=42, n_jobs=-1)
         
         search.fit(X_train_processed, y_train)
         
@@ -561,7 +571,8 @@ def main(snapshotdate):
         }
 
         # Save model
-        model_dir = "/opt/airflow/" + model_dir if not model_dir.startswith("/") else model_dir
+        if not model_dir.startswith("/"):
+            model_dir = os.path.join(base_path, model_dir)
         os.makedirs(model_dir, exist_ok=True)
         file_path = os.path.join(model_dir, model_artefact['model_version'] + '.pkl')
         with open(file_path, 'wb') as file:
@@ -579,17 +590,17 @@ def main(snapshotdate):
     xgb_model = xgb.XGBClassifier(
         eval_metric='logloss', 
         random_state=88,
-        early_stopping_rounds=10,
         tree_method='hist',  # Faster histogram-based algorithm
         n_jobs=-1  # Use all available cores
     )
     xgb_param = {
-        'n_estimators': [50, 100, 150],  # Include early stopping parameter
+        'n_estimators': [50, 100],  # Reduced for faster training
         'max_depth': [3, 4],  # Reduced from [3, 4, 5]
         'learning_rate': [0.1, 0.2],  # Higher values for faster convergence
         'subsample': [0.8],  # Fixed value
         'colsample_bytree': [0.8],  # Fixed value
         'reg_alpha': [0, 0.1],
+        'reg_lambda': [1]  # Fixed value
         'reg_lambda': [1]  # Fixed value
     }
     
@@ -612,9 +623,6 @@ def main(snapshotdate):
     }
     
     train_and_save_model("RF", rf_model, rf_param, search_type='random')
-  
-    # end spark session
-    spark.stop()
     
     print('\n\n---completed job---\n\n')
 

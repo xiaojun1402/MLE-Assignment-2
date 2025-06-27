@@ -17,17 +17,27 @@ DEFAULT_SNAPSHOT_DATE = "2024-06-01"
 
 def get_snapshot_date(**context):
     """
-    Get snapshot date from DAG config or use default
-    Users can override by providing 'snapshot_date' in DAG config
+    Get snapshot date from Airflow execution date for backfill support
+    For manual runs, users can override by providing 'snapshot_date' in DAG config
     """
     dag_run = context.get('dag_run')
-    if dag_run and dag_run.conf:
-        # User provided custom date in DAG config
-        custom_date = dag_run.conf.get('snapshot_date', DEFAULT_SNAPSHOT_DATE)
-        print(f"Using custom snapshot date: {custom_date}")
+    execution_date = context.get('execution_date')
+    
+    # Priority 1: User provided custom date in DAG config (for manual overrides)
+    if dag_run and dag_run.conf and dag_run.conf.get('snapshot_date'):
+        custom_date = dag_run.conf.get('snapshot_date')
+        print(f"Using custom snapshot date from config: {custom_date}")
         return custom_date
+    
+    # Priority 2: Use execution date for backfill (first day of month)
+    elif execution_date:
+        # Convert execution date to first day of month (YYYY-MM-01 format)
+        snapshot_date = execution_date.strftime("%Y-%m-01")
+        print(f"Using execution date as snapshot date: {snapshot_date}")
+        return snapshot_date
+    
+    # Priority 3: Fallback to default
     else:
-        # Use default date
         print(f"Using default snapshot date: {DEFAULT_SNAPSHOT_DATE}")
         return DEFAULT_SNAPSHOT_DATE
 
@@ -172,23 +182,49 @@ default_args = {
 with DAG(
     'ml_pipeline_loan_default',
     default_args=default_args,
-    description=f'End-to-end ML pipeline - Default: {DEFAULT_SNAPSHOT_DATE} (customizable)',
-    schedule_interval=None,  # Manual only
-    start_date=datetime(2023, 1, 1),
-    catchup=False,
-    max_active_runs=1,
+    description=f'End-to-end ML pipeline with temporal constraints',
+    schedule_interval='@monthly',  # Monthly schedule for backfill
+    start_date=datetime(2024, 3, 1),  # First valid snapshot (needs 14 months prior data)
+    end_date=datetime(2024, 12, 1),   # Last snapshot with full dataset
+    catchup=True,  # Enable backfill
+    max_active_runs=2,  # Allow some parallelism but not too much
     # Add DAG documentation
     doc_md=f"""
     ## ML Pipeline for Loan Default Prediction
     
-    **Default Date:** {DEFAULT_SNAPSHOT_DATE}
+    **Schedule:** Monthly backfill enabled (2024-03-01 to 2024-12-01)
     
-    ### How to use custom dates:
-    1. Click "Trigger DAG w/ Config"
-    2. Enter: {{"snapshot_date": "YYYY-MM-DD"}}
-    3. Example: {{"snapshot_date": "2024-07-01"}}
+    ### Training Methodology:
+    - **Training Period**: 10 months (80% of 12-month window)
+    - **Test Period**: 2 months (20% of 12-month window)  
+    - **OOT Period**: 2 months (out-of-time validation)
+    - **Total Window**: 14 months before snapshot date
     
-    ### Simple trigger uses default date: {DEFAULT_SNAPSHOT_DATE}
+    ### No Data Leakage Constraints:
+    - Features: Only use data up to snapshot date
+    - Labels: Available from full dataset (Jan 2023 - Dec 2024)
+    - Training: Respects temporal boundaries
+    
+    ### Backfill Usage:
+    1. **Historical Processing:** Use Airflow backfill:
+       ```bash
+       airflow dags backfill ml_pipeline_loan_default -s 2024-03-01 -e 2024-12-01
+       ```
+    
+    2. **Single Month:** Trigger manually for specific snapshot date
+    
+    3. **Custom Date Override:** Click "Trigger DAG w/ Config" and enter:
+       ```json
+       {{"snapshot_date": "2024-07-01"}}
+       ```
+    
+    ### Example Timeline (Snapshot: 2024-07-01):
+    - Train: 2023-05-01 to 2024-02-01 (10 months)
+    - Test: 2024-03-01 to 2024-04-01 (2 months)
+    - OOT: 2024-05-01 to 2024-06-01 (2 months)
+    - Feature-Label: Use all valid pairs with labels ≤ Dec 2024
+    
+    **Valid Snapshots:** 2024-03-01 to 2024-12-01 (10 runs)
     """,
 ) as dag:
 
@@ -229,8 +265,8 @@ with DAG(
     model_training = BashOperator(
         task_id='model_training',
         bash_command=(
-            'cd /opt/airflow/scripts && '
-            'python3 model_train.py '
+            'cd /opt/airflow && '
+            'python3 scripts/model_train.py '
             '--snapshotdate "{{ ti.xcom_pull(task_ids="get_snapshot_date") }}"'
         ),
     )
@@ -240,8 +276,8 @@ with DAG(
     model_inference = BashOperator(
         task_id='model_inference',
         bash_command=(
-            'cd /opt/airflow/scripts && '
-            'python3 model_inference.py '
+            'cd /opt/airflow && '
+            'python3 scripts/model_inference.py '
             '--snapshotdate "{{ ti.xcom_pull(task_ids="get_snapshot_date") }}" '
             '--modelname "XGB_model_{{ ti.xcom_pull(task_ids="get_snapshot_date") | replace("-", "_") }}.pkl"'
         ),

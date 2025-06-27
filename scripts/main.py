@@ -33,37 +33,50 @@ import utils.data_processing_gold_table_v2
 def main(snapshotdate):
     print('\n\n---starting job---\n\n')
     
-    # Initialize SparkSession with optimized settings for containerized environment
-    spark = pyspark.sql.SparkSession.builder \
-        .appName("ml_pipeline_data_processing") \
-        .master("local[2]") \
-        .config("spark.driver.memory", "1g") \
-        .config("spark.executor.memory", "1g") \
-        .config("spark.sql.adaptive.enabled", "true") \
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
-        .getOrCreate()
+    # Set minimal Java configuration for Spark
+    os.environ['JAVA_HOME'] = '/usr/lib/jvm/java-17-openjdk-arm64'
+    os.environ['JAVA_OPTS'] = '-Xmx512m -Xms256m'
+    os.environ['SPARK_LOCAL_IP'] = '127.0.0.1'
+    os.environ['PYSPARK_PYTHON'] = '/usr/local/bin/python'
+    os.environ['PYSPARK_DRIVER_PYTHON'] = '/usr/local/bin/python'
+    
+    # Try minimal Spark configuration
+    try:
+        spark = pyspark.sql.SparkSession.builder \
+            .appName("ml_pipeline_data_processing") \
+            .master("local[1]") \
+            .config("spark.driver.memory", "512m") \
+            .config("spark.driver.maxResultSize", "256m") \
+            .config("spark.sql.shuffle.partitions", "1") \
+            .getOrCreate()
+    except Exception as e:
+        print(f"Failed to initialize Spark with minimal config: {e}")
+        print("Attempting with basic configuration...")
+        spark = pyspark.sql.SparkSession.builder \
+            .appName("ml_pipeline_data_processing") \
+            .getOrCreate()
 
     # Set log level to ERROR to hide warnings
     spark.sparkContext.setLogLevel("ERROR")
 
-    # load arguments
-    date_str = snapshotdate 
-
-    # create bronze datalake
-    bronze_base_dir = "/opt/airflow/datamart/bronze/"
+    # Single date processing for proper Airflow backfill
+    date_str = snapshotdate
+    print(f"Processing snapshot date: {date_str}")
     
-    if not os.path.exists(bronze_base_dir):
-        os.makedirs(bronze_base_dir)
-
+    # Create datalake directories
+    bronze_base_dir = "/opt/airflow/datamart/bronze/"
+    silver_base_dir = "/opt/airflow/datamart/silver/"
+    gold_base_dir = "/opt/airflow/datamart/gold/"
+    
+    for base_dir in [bronze_base_dir, silver_base_dir, gold_base_dir]:
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir)
+    
+    # Process single date for bronze and silver
+    print(f"\n=== Processing Bronze & Silver for {date_str} ===")
+    
     # run data processing - bronze 
     utils.data_processing_bronze_table.process_bronze_table(date_str, bronze_base_dir, spark)
-
-    # create silver datalake
-    silver_base_dir = "/opt/airflow/datamart/silver/"
-
-    if not os.path.exists(silver_base_dir):
-        os.makedirs(silver_base_dir)
 
     # run data processing - silver 
     utils.data_processing_silver_table.process_silver_loan_table(date_str, bronze_base_dir, silver_base_dir, spark)
@@ -71,14 +84,9 @@ def main(snapshotdate):
     utils.data_processing_silver_table.process_silver_financials_table(date_str, bronze_base_dir, silver_base_dir, spark)
     utils.data_processing_silver_table.process_silver_clickstream_table(date_str, bronze_base_dir, silver_base_dir, spark)
 
-    # create gold datalake
-    gold_base_dir = "/opt/airflow/datamart/gold/"
-
-    if not os.path.exists(gold_base_dir):
-        os.makedirs(gold_base_dir)
-
-    # run data processing - gold
-    utils.data_processing_gold_table_v2.process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, dpd_cutoff = 30, mob_cutoff = 6)
+    # run data processing - gold (process all dates together to find valid feature-label pairs)
+    print("\n=== Processing Gold Table (All Dates) ===")
+    utils.data_processing_gold_table_v2.process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, dpd_cutoff = 30, mob_cutoff = 6, snapshot_date = date_str)
 
     # end spark session
     spark.stop()

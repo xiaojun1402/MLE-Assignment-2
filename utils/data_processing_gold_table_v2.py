@@ -16,7 +16,7 @@ def safe_count(df, description="DataFrame"):
         print(f"Warning: Could not count {description} due to: {str(e)}")
         return "Unknown"
 
-def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, dpd_cutoff=30, mob_cutoff=6, create_label_store=True):
+def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, dpd_cutoff=30, mob_cutoff=6, create_label_store=True, snapshot_date=None):
 
     """
     Improved approach for multi-snapshot delayed labelling with separate feature and label stores
@@ -66,30 +66,61 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
     # Get pre-loan clickstream features
     click_features = get_pre_loan_clickstream_features(clickstream_df, lms_df, spark)
     
-    # Find valid feature dates (where we have data 6 months later for labels)
+    # Find valid feature dates with snapshot date constraints
     print("\n=== Finding Valid Snapshot Dates ===")
+    
+    # Parse snapshot date
+    from datetime import datetime
+    if snapshot_date:
+        snapshot_dt = datetime.strptime(snapshot_date, "%Y-%m-%d").date()
+        print(f"Snapshot date constraint: {snapshot_date}")
+    else:
+        snapshot_dt = None
+        print("No snapshot date constraint")
     
     # Get available dates
     attr_dates = set([r.snapshot_date for r in attributes_df.select("snapshot_date").distinct().collect()])
     fin_dates = set([r.snapshot_date for r in financials_df.select("snapshot_date").distinct().collect()])
     lms_dates = set([r.snapshot_date for r in lms_df.select("snapshot_date").distinct().collect()])
     
+    # Dataset boundaries (labels available from Jan 2023 to Dec 2024)
+    dataset_start = datetime(2023, 1, 1).date()
+    dataset_end = datetime(2024, 12, 31).date()
+    
+    print(f"Dataset label range: {dataset_start} to {dataset_end}")
+    
     # Find feature dates where we have both feature data and label data 6 months later
     valid_feature_dates = []
     
     # Use the intersection of monthly data dates as potential feature dates
-    # Since attributes and financials have the most customers (12.5K each), use their intersection
     potential_feature_dates = attr_dates.intersection(fin_dates)
     
     for feature_date in sorted(potential_feature_dates):
+        # Apply snapshot date constraint: only use features up to snapshot date
+        if snapshot_dt and feature_date > snapshot_dt:
+            print(f"Skipping feature date {feature_date}: beyond snapshot date {snapshot_dt}")
+            continue
+            
         label_date = feature_date + relativedelta(months=mob_cutoff)
         
-        # Check if we have LMS data at the label date for creating labels
-        if label_date in lms_dates:
-            valid_feature_dates.append(feature_date)
+        # Check if label date is within dataset range (Jan 2023 - Dec 2024)
+        if label_date <= dataset_end:
+            # Check if we have LMS data at the label date for creating labels
+            if label_date in lms_dates:
+                valid_feature_dates.append(feature_date)
+                print(f"✅ Valid pair: Features {feature_date} → Labels {label_date}")
+            else:
+                print(f"❌ Missing LMS data for label date {label_date}")
+        else:
+            print(f"❌ Label date {label_date} beyond dataset range ({dataset_end})")
         
     if not valid_feature_dates:
-        raise RuntimeError("No valid feature-label date pairs found")
+        if snapshot_dt:
+            raise RuntimeError(f"No valid feature-label date pairs found for snapshot date {snapshot_date}. Try a later snapshot date.")
+        else:
+            raise RuntimeError("No valid feature-label date pairs found")
+    
+    print(f"\nFound {len(valid_feature_dates)} valid feature-label pairs for processing")
     
     # Process each valid snapshot date 
     print("\n=== Processing Feature and Label Stores ===")
@@ -173,32 +204,37 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
     # Save stores
     print("\n=== Saving Data Stores ===")
     
-    # Feature Store
+    # Feature Store - Use more reliable save approach
     feature_output_path = os.path.join(gold_base_dir, 'feature_store')
     os.makedirs(feature_output_path, exist_ok=True)
+    
+    # Clear directory first to avoid conflicts
+    if os.path.exists(feature_output_path):
+        shutil.rmtree(feature_output_path)
+    os.makedirs(feature_output_path, exist_ok=True)
+    
     try:
-        feature_store.write.mode("overwrite").parquet(feature_output_path)
-        print(f"Feature Store saved to: {feature_output_path}")
+        # Use repartition and chunked approach from the start for reliability
+        feature_store.repartition(1).write.mode("overwrite").option("maxRecordsPerFile", 50000).parquet(feature_output_path)
+        print(f"✅ Feature Store saved to: {feature_output_path}")
     except Exception as e:
-        print(f"Error saving feature store: {str(e)}")
-        # Try alternative approach - clear directory and use simple write without coalesce
+        print(f"❌ Error saving feature store as parquet: {str(e)}")
+        # Convert to pandas and save as parquet (more reliable in containers)
         try:
-            if os.path.exists(feature_output_path):
-                shutil.rmtree(feature_output_path)
-            os.makedirs(feature_output_path, exist_ok=True)
-            # Avoid coalesce which can cause connection issues - just write as-is
-            feature_store.write.mode("overwrite").option("maxRecordsPerFile", 10000).parquet(feature_output_path)
-            print(f"Feature Store saved (chunked) to: {feature_output_path}")
+            print("Attempting pandas-based save...")
+            feature_pdf = feature_store.toPandas()
+            feature_pdf.to_parquet(os.path.join(feature_output_path, "feature_store.parquet"), 
+                                 index=False, engine='pyarrow')
+            print(f"✅ Feature Store saved via pandas to: {feature_output_path}")
         except Exception as e2:
-            print(f"Failed to save feature store: {str(e2)}")
-            print("Attempting to save as CSV fallback...")
+            print(f"❌ Pandas save failed: {str(e2)}")
+            # Final fallback - save as CSV
             try:
-                csv_path = feature_output_path.replace('.parquet', '.csv')
-                feature_store.write.mode("overwrite").option("header", "true").csv(csv_path)
-                print(f"Feature Store saved as CSV to: {csv_path}")
+                feature_store.write.mode("overwrite").option("header", "true").csv(feature_output_path + "_csv")
+                print(f"⚠️ Feature Store saved as CSV to: {feature_output_path}_csv")
             except Exception as e3:
-                print(f"All save attempts failed: {str(e3)}")
-                # Don't re-raise - continue processing
+                print(f"❌ All feature store save attempts failed: {str(e3)}")
+                print("🚨 WARNING: Feature store not saved - inference may fail!")
     
     # Label Store  
     label_output_path = os.path.join(gold_base_dir, 'label_store')
@@ -225,30 +261,37 @@ def process_gold_feature_and_label_store(silver_base_dir, gold_base_dir, spark, 
                 print(f"All save attempts failed: {str(e3)}")
                 # Don't re-raise - continue processing
     
-    # Combined Store
+    # Combined Store - Use same reliable approach
     combined_output_path = os.path.join(gold_base_dir, 'combined_store')
     os.makedirs(combined_output_path, exist_ok=True)
+    
+    # Clear directory first to avoid conflicts
+    if os.path.exists(combined_output_path):
+        shutil.rmtree(combined_output_path)
+    os.makedirs(combined_output_path, exist_ok=True)
+    
     try:
-        combined_store.write.mode("overwrite").parquet(combined_output_path)
-        print(f"Combined Store saved to: {combined_output_path}")
+        # Use repartition and chunked approach from the start for reliability
+        combined_store.repartition(1).write.mode("overwrite").option("maxRecordsPerFile", 50000).parquet(combined_output_path)
+        print(f"✅ Combined Store saved to: {combined_output_path}")
     except Exception as e:
-        print(f"Error saving combined store: {str(e)}")
+        print(f"❌ Error saving combined store as parquet: {str(e)}")
+        # Convert to pandas and save as parquet (more reliable in containers)
         try:
-            if os.path.exists(combined_output_path):
-                shutil.rmtree(combined_output_path)
-            os.makedirs(combined_output_path, exist_ok=True)
-            combined_store.write.mode("overwrite").option("maxRecordsPerFile", 10000).parquet(combined_output_path)
-            print(f"Combined Store saved (chunked) to: {combined_output_path}")
+            print("Attempting pandas-based save...")
+            combined_pdf = combined_store.toPandas()
+            combined_pdf.to_parquet(os.path.join(combined_output_path, "combined_store.parquet"), 
+                                  index=False, engine='pyarrow')
+            print(f"✅ Combined Store saved via pandas to: {combined_output_path}")
         except Exception as e2:
-            print(f"Failed to save combined store: {str(e2)}")
-            print("Attempting to save as CSV fallback...")
+            print(f"❌ Pandas save failed: {str(e2)}")
+            # Final fallback - save as CSV
             try:
-                csv_path = combined_output_path.replace('.parquet', '.csv')
-                combined_store.write.mode("overwrite").option("header", "true").csv(csv_path)
-                print(f"Combined Store saved as CSV to: {csv_path}")
+                combined_store.write.mode("overwrite").option("header", "true").csv(combined_output_path + "_csv")
+                print(f"⚠️ Combined Store saved as CSV to: {combined_output_path}_csv")
             except Exception as e3:
-                print(f"All save attempts failed: {str(e3)}")
-                # Don't re-raise - continue processing
+                print(f"❌ All combined store save attempts failed: {str(e3)}")
+                print("🚨 WARNING: Combined store not saved - training may fail!")
     
     return {
         'feature_store': feature_store,

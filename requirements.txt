@@ -10,3 +10,4 @@ xgboost==1.5.2
 pyarrow==9.0.0
 evidently==0.4.15
 python-dateutil==2.8.2
+findspark==2.0.1

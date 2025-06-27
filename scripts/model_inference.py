@@ -10,11 +10,7 @@ import random
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pprint
-import pyspark
-import pyspark.sql.functions as F
-
-from pyspark.sql.functions import col
-from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
+# Removed PySpark imports - using pandas only for consistency
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, PowerTransformer
@@ -207,13 +203,11 @@ def calculate_training_period_dates(model_train_date, train_test_period_months=1
         'oot_end_date': oot_end_date
     }
 
-def process_inference_data(features_sdf, feature_cols, model_artefact, config, data_type="current"):
+def process_inference_data(features_pdf, feature_cols, model_artefact, config, data_type="current"):
     """
     Process inference data for either training or current period
     """
     print(f"\n=== Processing {data_type} inference data ===")
-    
-    features_pdf = features_sdf.toPandas()
     print(f"{data_type.capitalize()} data shape: {features_pdf.shape}")
     
     X_inference = features_pdf[feature_cols]
@@ -246,23 +240,20 @@ def process_inference_data(features_sdf, feature_cols, model_artefact, config, d
 
 def main(snapshotdate, modelname):
     print('\n\n---starting enhanced inference job---\n\n')
-    
-    # Initialize SparkSession
-    spark = pyspark.sql.SparkSession.builder \
-        .appName("dev") \
-        .master("local[*]") \
-        .getOrCreate()
-    
-    # Set log level to ERROR to hide warnings
-    spark.sparkContext.setLogLevel("ERROR")
 
     # --- set up config ---
     config = {}
     config["snapshot_date_str"] = snapshotdate
     config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
     config["model_name"] = modelname
-    config["model_bank_directory"] = "/opt/airflow/model_bank/"
-    config["model_artefact_filepath"] = config["model_bank_directory"] + config["model_name"]
+    
+    # Use consistent path handling
+    base_path = os.getcwd()
+    if not os.path.exists(os.path.join(base_path, "datamart")):
+        base_path = os.path.dirname(base_path)
+    
+    config["model_bank_directory"] = os.path.join(base_path, "model_bank/")
+    config["model_artefact_filepath"] = os.path.join(config["model_bank_directory"], config["model_name"])
     
     # Calculate training period dates
     training_dates = calculate_training_period_dates(config["snapshot_date"].date())
@@ -281,10 +272,41 @@ def main(snapshotdate, modelname):
     
     print(f"\nModel loaded successfully! {config['model_artefact_filepath']}")
 
-    # --- load feature store ---
-    feature_location = "/opt/airflow/datamart/gold/feature_store"
-    features_store_sdf = spark.read.parquet(feature_location)
-    print(f"Feature store total rows: {features_store_sdf.count()}")
+    # --- load feature store with fallback to combined_store ---
+    feature_store_location = os.path.join(base_path, "datamart/gold/feature_store")
+    combined_store_location = os.path.join(base_path, "datamart/gold/combined_store")
+    
+    # Try feature_store first, fallback to combined_store
+    features_store = None
+    
+    if os.path.exists(feature_store_location):
+        try:
+            print(f"Loading from feature_store: {feature_store_location}")
+            # Check if it's a directory with parquet files or a single file
+            if os.path.isdir(feature_store_location):
+                parquet_files = [f for f in os.listdir(feature_store_location) if f.endswith('.parquet')]
+                if parquet_files:
+                    features_store = pd.read_parquet(feature_store_location, engine='pyarrow')
+                elif os.path.exists(os.path.join(feature_store_location, "feature_store.parquet")):
+                    features_store = pd.read_parquet(os.path.join(feature_store_location, "feature_store.parquet"), engine='pyarrow')
+            print(f"Feature store total rows: {len(features_store)}")
+        except Exception as e:
+            print(f"Error loading feature_store: {str(e)}, trying combined_store...")
+    
+    if features_store is None:
+        try:
+            print(f"Loading from combined_store: {combined_store_location}")
+            # Check if it's a directory with parquet files or a single file
+            if os.path.isdir(combined_store_location):
+                parquet_files = [f for f in os.listdir(combined_store_location) if f.endswith('.parquet')]
+                if parquet_files:
+                    features_store = pd.read_parquet(combined_store_location, engine='pyarrow')
+                elif os.path.exists(os.path.join(combined_store_location, "combined_store.parquet")):
+                    features_store = pd.read_parquet(os.path.join(combined_store_location, "combined_store.parquet"), engine='pyarrow')
+            print(f"Combined store total rows: {len(features_store)}")
+        except Exception as e:
+            print(f"Error loading combined_store: {str(e)}")
+            raise RuntimeError(f"Failed to load data from both {feature_store_location} and {combined_store_location}")
 
     feature_cols = ['Age','occupation_developer', 'occupation_scientist', 'occupation_engineer',
         'occupation_teacher', 'occupation_manager', 'occupation_enterpreneur',
@@ -320,19 +342,25 @@ def main(snapshotdate, modelname):
         'avg_fe_17', 'avg_fe_18', 'avg_fe_19', 'avg_fe_20'
     ]
 
+    # Convert dates for pandas filtering
+    features_store['snapshot_date'] = pd.to_datetime(features_store['snapshot_date'])
+    train_test_start_date = pd.to_datetime(config["train_test_start_date"])
+    train_end_date = pd.to_datetime(config["train_end_date"])
+    snapshot_date = pd.to_datetime(config["snapshot_date"])
+
     # --- 1. Process Training Period Data ---
     print("\n" + "="*50)
     print("PROCESSING TRAINING PERIOD DATA")
     print("="*50)
     
-    training_features_sdf = features_store_sdf.filter(
-        (col("snapshot_date") >= config["train_test_start_date"]) & 
-        (col("snapshot_date") <= config["train_end_date"])
-    )
-    print(f"Training period features: {training_features_sdf.count()} rows")
+    training_features = features_store[
+        (features_store["snapshot_date"] >= train_test_start_date) & 
+        (features_store["snapshot_date"] <= train_end_date)
+    ].copy()
+    print(f"Training period features: {len(training_features)} rows")
     
     training_predictions = process_inference_data(
-        training_features_sdf, feature_cols, model_artefact, config, "training"
+        training_features, feature_cols, model_artefact, config, "training"
     )
 
     # --- 2. Process Current Snapshot Data ---
@@ -340,13 +368,13 @@ def main(snapshotdate, modelname):
     print("PROCESSING CURRENT SNAPSHOT DATA")
     print("="*50)
     
-    current_features_sdf = features_store_sdf.filter(
-        col("snapshot_date") == config["snapshot_date"]
-    )
-    print(f"Current snapshot features: {current_features_sdf.count()} rows")
+    current_features = features_store[
+        features_store["snapshot_date"] == snapshot_date
+    ].copy()
+    print(f"Current snapshot features: {len(current_features)} rows")
     
     current_predictions = process_inference_data(
-        current_features_sdf, feature_cols, model_artefact, config, "current"
+        current_features, feature_cols, model_artefact, config, "current"
     )
 
     # --- 3. Save Both Datasets ---
@@ -355,20 +383,19 @@ def main(snapshotdate, modelname):
     print("="*50)
     
     # Create output directory
-    gold_directory = f"/opt/airflow/datamart/gold/model_predictions/{config['model_name'][:-4]}/"
-    if not os.path.exists(gold_directory):
-        os.makedirs(gold_directory)
+    gold_directory = os.path.join(base_path, f"datamart/gold/model_predictions/{config['model_name'][:-4]}/")
+    os.makedirs(gold_directory, exist_ok=True)
     
     # Save training predictions
     training_partition_name = f"{config['model_name'][:-4]}_training_predictions_{config['snapshot_date_str'].replace('-','_')}.parquet"
-    training_filepath = gold_directory + training_partition_name
-    spark.createDataFrame(training_predictions).write.mode("overwrite").parquet(training_filepath)
+    training_filepath = os.path.join(gold_directory, training_partition_name)
+    training_predictions.to_parquet(training_filepath, index=False, engine='pyarrow')
     print(f'Training predictions saved to: {training_filepath}')
     
     # Save current predictions  
     current_partition_name = f"{config['model_name'][:-4]}_current_predictions_{config['snapshot_date_str'].replace('-','_')}.parquet"
-    current_filepath = gold_directory + current_partition_name
-    spark.createDataFrame(current_predictions).write.mode("overwrite").parquet(current_filepath)
+    current_filepath = os.path.join(gold_directory, current_partition_name)
+    current_predictions.to_parquet(current_filepath, index=False, engine='pyarrow')
     print(f'Current predictions saved to: {current_filepath}')
 
     # --- Summary ---
@@ -380,9 +407,6 @@ def main(snapshotdate, modelname):
     print(f"Current Snapshot: {config['snapshot_date'].date()}")
     print(f"Training Predictions: {len(training_predictions)} rows")
     print(f"Current Predictions: {len(current_predictions)} rows")
-
-    # --- end spark session --- 
-    spark.stop()
     
     print('\n\n---completed enhanced inference job---\n\n')
 
