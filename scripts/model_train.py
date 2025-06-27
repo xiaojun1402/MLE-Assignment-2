@@ -600,7 +600,7 @@ def main(snapshotdate):
         'subsample': [0.8],  # Fixed value
         'colsample_bytree': [0.8],  # Fixed value
         'reg_alpha': [0, 0.1],
-        'reg_lambda': [1]  # Fixed value
+        'reg_lambda': [1],  # Fixed value
         'reg_lambda': [1]  # Fixed value
     }
     
@@ -623,7 +623,7 @@ def main(snapshotdate):
     }
     
     train_and_save_model("RF", rf_model, rf_param, search_type='random')
-    
+
     print('\n\n---completed job---\n\n')
 
 if __name__ == "__main__":
