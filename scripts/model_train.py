@@ -576,15 +576,21 @@ def main(snapshotdate):
         print(f"{model_name} model reloaded - OOT AUC:", roc_auc_score(y_oot, y_pred_oot))
 
     # XGBoost - Optimized for faster training
-    xgb_model = xgb.XGBClassifier(eval_metric='logloss', random_state=88)
+    xgb_model = xgb.XGBClassifier(
+        eval_metric='logloss', 
+        random_state=88,
+        early_stopping_rounds=10,
+        tree_method='hist',  # Faster histogram-based algorithm
+        n_jobs=-1  # Use all available cores
+    )
     xgb_param = {
-        'n_estimators': [50, 100],
-        'max_depth': [3, 4, 5],
-        'learning_rate': [0.05, 0.1],
-        'subsample': [0.8, 0.9],
-        'colsample_bytree': [0.8, 0.9],
+        'n_estimators': [50, 100, 150],  # Include early stopping parameter
+        'max_depth': [3, 4],  # Reduced from [3, 4, 5]
+        'learning_rate': [0.1, 0.2],  # Higher values for faster convergence
+        'subsample': [0.8],  # Fixed value
+        'colsample_bytree': [0.8],  # Fixed value
         'reg_alpha': [0, 0.1],
-        'reg_lambda': [1, 2]
+        'reg_lambda': [1]  # Fixed value
     }
     
     train_and_save_model("XGB", xgb_model, xgb_param, search_type='random')

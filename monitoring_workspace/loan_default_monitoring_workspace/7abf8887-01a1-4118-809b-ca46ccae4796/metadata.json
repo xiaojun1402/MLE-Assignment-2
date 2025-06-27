@@ -1,0 +1,14 @@
+{
+  "id": "7abf8887-01a1-4118-809b-ca46ccae4796",
+  "name": "Loan Default Prediction Monitoring",
+  "description": "Model monitoring for loan default prediction",
+  "dashboard": {
+    "name": "Loan Default Prediction Monitoring",
+    "panels": [],
+    "tabs": [],
+    "tab_id_to_panel_ids": {}
+  },
+  "team_id": null,
+  "date_from": null,
+  "date_to": null
+}
